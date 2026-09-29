@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Accept Shared Machines{% endblock %}
+{% block legend_name %}Accept Shared Machines{% endblock %}
+{% block content %}
+<div style="padding: 20px; background-color: #F2F2F2;">
+  <div class="layui-row layui-col-space15">
+    <div class="layui-card">
+      <div class="layui-card-body">
+        <p>Link {{ url }}</p>
+        <p>Add the machines shared by this link to your address book?</p>
+        <form method="post">
+          {% csrf_token %}
+          <button type="submit" class="layui-btn">Accept</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

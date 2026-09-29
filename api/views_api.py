@@ -1,65 +1,100 @@
-# cython:language_level=3
-from django.http import JsonResponse
-import json
-import time
 import datetime
-import hashlib
+import functools
+import json
+import logging
 import math
+import secrets
+
 from django.contrib import auth
-from django.forms.models import model_to_dict
-from api.models import RustDeskToken, UserProfile, RustDeskTag, RustDeskPeer, RustDesDevice, ConnLog, FileLog
+from django.db import transaction
 from django.db.models import Q
-import copy
-from .views_front import *
-from django.conf import settings
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+
+from api.models import RustDeskToken, UserProfile, RustDeskTag, RustDeskPeer, RustDeskDevice, ConnLog, FileLog
+from .views_front import EFFECTIVE_SECONDS
+
+logger = logging.getLogger(__name__)
+
+# Fields a client may set on RustDeskDevice via /api/sysinfo
+SYSINFO_FIELDS = ('cpu', 'hostname', 'memory', 'os', 'username', 'version')
 
 
-def login(request):
+def client_api(view):
+    # RustDesk client endpoint: no CSRF, JSON body parsed into `data`,
+    # malformed requests answered with an error instead of a server error
+    @csrf_exempt
+    @functools.wraps(view)
+    def wrapper(request):
+        data = {}
+        if request.method == 'POST':
+            try:
+                data = json.loads(request.body or b'{}')
+            except ValueError:
+                return JsonResponse({'error': 'Invalid JSON body!'}, status=400)
+            if not isinstance(data, dict):
+                return JsonResponse({'error': 'Invalid JSON body!'}, status=400)
+        try:
+            return view(request, data)
+        except (KeyError, TypeError, ValueError, IndexError, AttributeError) as e:
+            logger.warning('%s: bad request: %r', view.__name__, e)
+            return JsonResponse({'error': 'Invalid request!'}, status=400)
+    return wrapper
+
+
+def token_expired(token):
+    age = datetime.datetime.now() - token.create_time
+    return age.total_seconds() >= EFFECTIVE_SECONDS
+
+
+def get_valid_token(request):
+    # Returns the RustDeskToken from the Authorization header, or None if missing or expired
+    access_token = request.META.get('HTTP_AUTHORIZATION', '')
+    access_token = access_token.split('Bearer ')[-1].strip()
+    if not access_token:
+        return None
+    token = RustDeskToken.objects.filter(Q(access_token=access_token)).first()
+    if token and token_expired(token):
+        token.delete()
+        return None
+    return token
+
+
+@client_api
+def login(request, data):
     result = {}
     if request.method == 'GET':
         result['error'] = 'Wrong request method! Please use POST.'
         return JsonResponse(result)
 
-    data = json.loads(request.body.decode())
-    
     username = data.get('username', '')
     password = data.get('password', '')
-    rid = data.get('id', '')
-    uuid = data.get('uuid', '')
-    autoLogin = data.get('autoLogin', True)
-    rtype = data.get('type', '')
-    deviceInfo = data.get('deviceInfo', '')
     user = auth.authenticate(username=username, password=password)
     if not user:
         result['error'] = 'Incorrect account or password! Please try again, multiple failed attempts will lock your IP!'
         return JsonResponse(result)
-    user.rid = rid
-    user.uuid = uuid
-    user.autoLogin = autoLogin
-    user.rtype = rtype
-    user.deviceInfo = json.dumps(deviceInfo)
+    user.rid = data.get('id', '')
+    user.uuid = data.get('uuid', '')
+    user.autoLogin = data.get('autoLogin', True)
+    user.rtype = data.get('type', '')
+    user.deviceInfo = json.dumps(data.get('deviceInfo', ''))
     user.save()
-    
+
     token = RustDeskToken.objects.filter(Q(uid=user.id) & Q(username=user.username) & Q(rid=user.rid)).first()
-    
+
     # Check if expired
-    if token:
-        now_t = datetime.datetime.now()
-        nums = (now_t - token.create_time).seconds if now_t > token.create_time else 0
-        if nums >= EFFECTIVE_SECONDS:
-            token.delete()
-            token = None
-    
+    if token and token_expired(token):
+        token.delete()
+        token = None
+
     if not token:
-        # Get and save token
-        token = RustDeskToken(
+        token = RustDeskToken.objects.create(
             username=user.username,
             uid=user.id,
             uuid=user.uuid,
             rid=user.rid,
-            access_token=getStrSha256(str(time.time())+settings.SALT_CRED)
+            access_token=secrets.token_urlsafe(32)
         )
-        token.save()
 
     result['access_token'] = token.access_token
     result['type'] = 'access_token'
@@ -67,255 +102,198 @@ def login(request):
     return JsonResponse(result)
 
 
-def logout(request):
+@client_api
+def logout(request, data):
     if request.method == 'GET':
-        result = {'error':'Wrong request method!'}
-        return JsonResponse(result)
-    
-    data = json.loads(request.body.decode())
-    rid = data.get('id', '')
-    uuid = data.get('uuid', '')
-    user = UserProfile.objects.filter(Q(rid=rid) & Q(uuid=uuid)).first()
-    if not user:
-        result = {'error':'Abnormal request!'}
-        return JsonResponse(result)
-    token = RustDeskToken.objects.filter(Q(uid=user.id) & Q(rid=user.rid)).first()
-    if token:
-        token.delete()
+        return JsonResponse({'error':'Wrong request method!'})
 
-    result = {'code':1}
-    return JsonResponse(result)
+    token = get_valid_token(request)
+    if not token:
+        return JsonResponse({'error':'Abnormal request!'})
+    token.delete()
+    return JsonResponse({'code':1})
 
 
-def currentUser(request):
+@client_api
+def currentUser(request, data):
     result = {}
     if request.method == 'GET':
         result['error'] = 'Incorrect submission method!'
         return JsonResponse(result)
-    postdata = json.loads(request.body)
-    rid = postdata.get('id', '')
-    uuid = postdata.get('uuid', '')
-    
-    access_token = request.META.get('HTTP_AUTHORIZATION', '')
-    access_token = access_token.split('Bearer ')[-1]
-    token = RustDeskToken.objects.filter(Q(access_token=access_token)).first()
-    user = None
-    if token:
-        user = UserProfile.objects.filter(Q(id=token.uid)).first()
-    
+    token = get_valid_token(request)
+    user = UserProfile.objects.filter(Q(id=token.uid)).first() if token else None
     if user:
-        if token:
-            result['access_token'] = token.access_token
+        result['access_token'] = token.access_token
         result['type'] = 'access_token'
         result['name'] = user.username
     return JsonResponse(result)
 
 
-def ab(request):
-    '''
-    '''
-    access_token = request.META.get('HTTP_AUTHORIZATION', '')
-    access_token = access_token.split('Bearer ')[-1]
-    token = RustDeskToken.objects.filter(Q(access_token=access_token)).first()
+def parse_tag_color(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+@client_api
+def ab(request, data):
+    '''Legacy address book: GET returns it, POST replaces it'''
+    token = get_valid_token(request)
     if not token:
-        result = {'error':'Error pulling the list!'}
-        return JsonResponse(result)
-    
+        return JsonResponse({'error':'Error pulling the list!'})
+
     if request.method == 'GET':
-        result = {}
-        uid = token.uid
-        tags = RustDeskTag.objects.filter(Q(uid=uid))
-        tag_names = []
+        tags = RustDeskTag.objects.filter(Q(uid=token.uid))
+        tag_names = [str(x.tag_name) for x in tags]
         tag_colors = {}
-        if tags:
-            tag_names = [str(x.tag_name) for x in tags]
-            tag_colors = {str(x.tag_name):int(x.tag_color) for x in tags if x.tag_color!=''}
-        
+        for x in tags:
+            color = parse_tag_color(x.tag_color)
+            if color is not None:
+                tag_colors[str(x.tag_name)] = color
+
         peers_result = []
-        peers = RustDeskPeer.objects.filter(Q(uid=uid))
-        if peers:
-            for peer in peers:
-                tmp = {
-                    'id': peer.rid,
-                    'username': peer.username,
-                    'hostname': peer.hostname,
-                    'alias': peer.alias,
-                    'platform': peer.platform,
-                    'tags': peer.tags.split(','),
-                    'hash': peer.rhash,
-                }
-                peers_result.append(tmp)
-        
-        result['updated_at'] = datetime.datetime.now()
-        result['data'] = {
+        for peer in RustDeskPeer.objects.filter(Q(uid=token.uid)):
+            peers_result.append({
+                'id': peer.rid,
+                'username': peer.username,
+                'hostname': peer.hostname,
+                'alias': peer.alias,
+                'platform': peer.platform,
+                'tags': [x for x in peer.tags.split(',') if x],
+                'hash': peer.rhash,
+            })
+
+        book = {
             'tags': tag_names,
             'peers': peers_result,
             'tag_colors': json.dumps(tag_colors)
         }
-        result['data'] = json.dumps(result['data'])
-        return JsonResponse(result)
-    else:
-        postdata = json.loads(request.body.decode())
-        data = postdata.get('data', '')
-        data = {} if data == '' else json.loads(data)
-        tagnames = data.get('tags', [])
-        tag_colors = data.get('tag_colors', '')
-        tag_colors = {} if tag_colors == '' else json.loads(tag_colors)
-        peers = data.get('peers', [])
-        
-        if tagnames:
-            # Delete old tags
+        return JsonResponse({'updated_at': datetime.datetime.now(), 'data': json.dumps(book)})
+
+    book = data.get('data', '')
+    book = json.loads(book) if book else {}
+    tag_colors = book.get('tag_colors', '')
+    tag_colors = json.loads(tag_colors) if tag_colors else {}
+
+    # Replace the stored lists present in the request; an empty list clears them
+    with transaction.atomic():
+        if 'tags' in book:
             RustDeskTag.objects.filter(uid=token.uid).delete()
-            # Add new ones
-            newlist = []
-            for name in tagnames:
-                tag = RustDeskTag(
-                    uid=token.uid,
-                    tag_name=name,
-                    tag_color=tag_colors.get(name, '')
-                )
-                newlist.append(tag)
-            RustDeskTag.objects.bulk_create(newlist)
-        if peers:
+            RustDeskTag.objects.bulk_create([
+                RustDeskTag(uid=token.uid, tag_name=name, tag_color=tag_colors.get(name, ''))
+                for name in book['tags']
+            ])
+        if 'peers' in book:
             RustDeskPeer.objects.filter(uid=token.uid).delete()
-            newlist = []
-            for one in peers:
-                peer = RustDeskPeer(
+            RustDeskPeer.objects.bulk_create([
+                RustDeskPeer(
                     uid=token.uid,
                     rid=one['id'],
-                    username=one['username'],
-                    hostname=one['hostname'],
-                    alias=one['alias'],
-                    platform=one['platform'],
-                    tags=','.join(one['tags']),
-                    rhash=one['hash'],                  
+                    username=one.get('username', ''),
+                    hostname=one.get('hostname', ''),
+                    alias=one.get('alias', ''),
+                    platform=one.get('platform', ''),
+                    tags=','.join(str(x) for x in one.get('tags', [])),
+                    rhash=one.get('hash', ''),
                 )
-                newlist.append(peer)
-            RustDeskPeer.objects.bulk_create(newlist)
+                for one in book['peers']
+            ])
 
-    result = {
-    'code':102,
-    'data':'Error updating the address book'
-    }
-    return JsonResponse(result)
+    return JsonResponse({'code':1, 'data':'ok'})
 
-def sysinfo(request):
-    # Device information is sent only after client registration
-    result = {}
+
+@client_api
+def sysinfo(request, data):
+    # Device information is sent by every client with the API server configured
     if request.method == 'GET':
-        result['error'] = 'Incorrect submission method!'
-        return JsonResponse(result)
-    
-    client_ip = get_client_ip(request)
-    postdata = json.loads(request.body)
-    device = RustDesDevice.objects.filter(Q(rid=postdata['id']) & Q(uuid=postdata['uuid'])).first()
-    if not device:
-        device = RustDesDevice(
-            rid=postdata['id'],
-            cpu=postdata['cpu'],
-            hostname=postdata['hostname'],
-            memory=postdata['memory'],
-            os=postdata['os'],
-            username=postdata.get('username', '-'),
-            uuid=postdata['uuid'],
-            version=postdata['version'],
-            ip=client_ip,
-        )
-        device.save()
-    else:
-        postdata2 = copy.copy(postdata)
-        postdata2['rid'] = postdata2['id']
-        postdata2.pop('id')
-        postdata2['ip'] = client_ip
-        RustDesDevice.objects.filter(Q(rid=postdata['id']) & Q(uuid=postdata['uuid'])).update(**postdata2)
-    result['data'] = 'ok'
-    return JsonResponse(result)
+        return JsonResponse({'error':'Incorrect submission method!'})
 
-def heartbeat(request):
-    postdata = json.loads(request.body)
-    device = RustDesDevice.objects.filter(Q(rid=postdata['id']) & Q(uuid=postdata['uuid'])).first()
+    device = RustDeskDevice.objects.filter(Q(rid=data['id']) & Q(uuid=data['uuid'])).first()
+    if not device:
+        device = RustDeskDevice(rid=data['id'], uuid=data['uuid'], username='-')
+    for field in SYSINFO_FIELDS:
+        if field in data:
+            setattr(device, field, data[field])
+    device.ip = get_client_ip(request)
+    device.save()
+    return JsonResponse({'data':'ok'})
+
+
+@client_api
+def heartbeat(request, data):
+    device = RustDeskDevice.objects.filter(Q(rid=data['id']) & Q(uuid=data['uuid'])).first()
     if device:
         device.save()
-    # Token keep-alive
-    create_time = datetime.datetime.now() + datetime.timedelta(seconds=EFFECTIVE_SECONDS)
-    RustDeskToken.objects.filter(Q(rid=postdata['id']) & Q(uuid=postdata['uuid'])).update(create_time=create_time)
-    result = {}
-    result['data'] = 'Online'
-    return JsonResponse(result)
+    # Token keep-alive: extend only tokens that have not expired yet
+    now = datetime.datetime.now()
+    RustDeskToken.objects.filter(
+        Q(rid=data['id']) & Q(uuid=data['uuid'])
+        & Q(create_time__gt=now - datetime.timedelta(seconds=EFFECTIVE_SECONDS))
+    ).update(create_time=now)
+    return JsonResponse({'data':'Online'})
 
-def audit(request):
-    postdata = json.loads(request.body)
-    #print(postdata)
-    audit_type = postdata['action'] if 'action' in postdata else ''
+
+@client_api
+def audit(request, data):
+    audit_type = data.get('action', '')
     if audit_type == 'new':
-        new_conn_log = ConnLog(
-            action=postdata['action'] if 'action' in postdata else '',
-            conn_id=postdata['conn_id'] if 'conn_id' in postdata else 0,
-            from_ip=postdata['ip'] if 'ip' in postdata else '',
+        ConnLog.objects.create(
+            action=audit_type,
+            conn_id=data.get('conn_id', 0),
+            from_ip=data.get('ip', ''),
             from_id='',
-            rid=postdata['id'] if 'id' in postdata else '',
+            rid=data.get('id', ''),
             conn_start=datetime.datetime.now(),
-            session_id=postdata['session_id'] if 'session_id' in postdata else 0,
-            uuid=postdata['uuid'] if 'uuid' in postdata else '',
+            session_id=data.get('session_id', 0),
+            uuid=data.get('uuid', ''),
         )
-        new_conn_log.save()
-    elif audit_type =="close":
-        ConnLog.objects.filter(Q(conn_id=postdata['conn_id'])).update(conn_end=datetime.datetime.now())
-    elif 'is_file' in postdata:
-        print(postdata)
-        files = json.loads(postdata['info'])['files']
-        filesize = convert_filesize(int(files[0][1]))
-        new_file_log = FileLog(
-            file=postdata['path'],
-            user_id=postdata['peer_id'],
-            user_ip=json.loads(postdata['info'])['ip'],
-            remote_id=postdata['id'],
-            filesize=filesize,
-            direction=postdata['type'],
+    elif audit_type == 'close':
+        ConnLog.objects.filter(Q(conn_id=data['conn_id'])).update(conn_end=datetime.datetime.now())
+    elif 'is_file' in data:
+        info = json.loads(data['info'])
+        files = info.get('files') or [[None, 0]]
+        FileLog.objects.create(
+            file=data['path'],
+            user_id=data['peer_id'],
+            user_ip=info.get('ip', ''),
+            remote_id=data['id'],
+            filesize=convert_filesize(int(files[0][1])),
+            direction=data['type'],
             logged_at=datetime.datetime.now(),
         )
-        new_file_log.save()
+    elif 'peer' in data and 'conn_id' in data:
+        ConnLog.objects.filter(Q(conn_id=data['conn_id'])).update(
+            session_id=data.get('session_id', 0),
+            from_id=data['peer'][0],
+        )
     else:
-        try:
-            peer = postdata['peer']
-            ConnLog.objects.filter(Q(conn_id=postdata['conn_id'])).update(session_id=postdata['session_id'])
-            ConnLog.objects.filter(Q(conn_id=postdata['conn_id'])).update(from_id=peer[0])
-        except:
-            print(postdata)
+        logger.info('audit: unhandled event %s', data)
 
-    result = {
-    'code':1,
-    'data':'ok'
-    }
-    return JsonResponse(result)
+    return JsonResponse({'code':1, 'data':'ok'})
+
 
 def get_client_ip(request):
     x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
     if x_forwarded_for:
-        ip = x_forwarded_for.split(',')[0]
-    else:
-        ip = request.META.get('REMOTE_ADDR')
-    return ip
+        return x_forwarded_for.split(',')[0].strip()
+    return request.META.get('REMOTE_ADDR')
+
 
 def convert_filesize(size_bytes):
-    if size_bytes == 0:
+    if size_bytes <= 0:
         return "0B"
     size_name = ("B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB")
-    i = int(math.floor(math.log(size_bytes, 1024)))
-    p = math.pow(1024, i)
-    s = round(size_bytes / p, 2)
+    i = min(int(math.floor(math.log(size_bytes, 1024))), len(size_name) - 1)
+    s = round(size_bytes / math.pow(1024, i), 2)
     return "%s %s" % (s, size_name[i])
-    
-def users(request):
-    result = {
-    'code':1,
-    'data':'Alright'
-    }
-    return JsonResponse(result)
-    
-def peers(request):
-    result = {
-    'code':1,
-    'data':'ok'
-    }
-    return JsonResponse(result)
+
+
+@client_api
+def users(request, data):
+    return JsonResponse({'code':1, 'data':'Alright'})
+
+
+@client_api
+def peers(request, data):
+    return JsonResponse({'code':1, 'data':'ok'})

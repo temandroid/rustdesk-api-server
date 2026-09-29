@@ -62,17 +62,17 @@ function copyToClipboard(element) {
 
 
     <ul class="layui-nav">
-        <li class="layui-nav-item"><a href="/">Home</a></li>
-        <li class="layui-nav-item"><a href="/api/share">Share</a></li>
-        <li class="layui-nav-item"><a href="/api/installers">Installers</a></li>
+        <li class="layui-nav-item"><a href="{% url 'index' %}">Home</a></li>
+        <li class="layui-nav-item"><a href="{% url 'share' %}">Share</a></li>
+        <li class="layui-nav-item"><a href="{% url 'installers' %}">Installers</a></li>
 
         {% if u.is_admin %}
-        <li class="layui-nav-item"><a href="/admin" target="_blank">Admin Panel</a>
+        <li class="layui-nav-item"><a href="{% url 'admin:index' %}" target="_blank">Admin Panel</a>
         </li>
-        <li class="layui-nav-item"><a href="/api/conn_log">Connection Log</a></li>
-        <li class="layui-nav-item"><a href="/api/file_log">File Transfer Log</a></li>
+        <li class="layui-nav-item"><a href="{% url 'conn_log' %}">Connection Log</a></li>
+        <li class="layui-nav-item"><a href="{% url 'file_log' %}">File Transfer Log</a></li>
         {% endif %}
-        <li class="layui-nav-item"><a href="/api/user_action?action=logout" target="_blank">Logout</a></li>
+        <li class="layui-nav-item"><a href="{% url 'user_action' %}?action=logout">Logout</a></li>
     </ul>
 
     <fieldset class="layui-elem-field layui-field-title" style="margin-top: 20px;">

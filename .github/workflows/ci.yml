@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [master, dev]
+  push:
+    branches: [master, dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Never cancel runs on master: they may be deploying
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+env:
+  SECRET_KEY: ci-only-not-secret
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install linters
+        run: pip install ruff shellcheck-py
+      - name: Python (syntax errors, undefined names, unused imports)
+        run: ruff check --select E9,F api rustdesk_server_api manage.py
+      - name: Installer shell scripts
+        run: shellcheck -S error static/configs/*.sh && shellcheck deploy/*.sh
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Django system checks
+        run: python manage.py check
+      - name: Migrations are up to date
+        run: python manage.py makemigrations --check --dry-run
+      - name: Migrations apply to an empty database
+        run: python manage.py migrate --noinput
+      - name: Static files can be collected
+        run: python manage.py collectstatic --noinput
+      - name: Tests
+        run: python manage.py test api
+
+  audit:
+    name: Dependency vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pip-audit
+        run: pip install pip-audit
+      - name: Check requirements for known vulnerabilities
+        run: pip-audit -r requirements.txt
+
+  deploy:
+    name: Deploy to production
+    # Only after all checks passed, only from master
+    needs: [lint, test, audit]
+    if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    env:
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_USER: ${{ secrets.SSH_USER }}
+      SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          for name in SSH_HOST SSH_USER DEPLOY_PATH SSH_PRIVATE_KEY SSH_KNOWN_HOSTS; do
+            [ -n "${!name}" ] || { echo "::error::Secret $name is not set in the production environment"; exit 1; }
+          done
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf 'Host deploy-target\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_deploy\n  IdentitiesOnly yes\n  StrictHostKeyChecking yes\n' \
+            "$SSH_HOST" "$SSH_USER" "$SSH_PORT" > ~/.ssh/config
+      - name: Upload release
+        run: |
+          RELEASE="$DEPLOY_PATH/releases/$GITHUB_SHA"
+          ssh deploy-target "mkdir -p '$RELEASE'"
+          rsync -az --delete \
+            --exclude .git --exclude .github --exclude '__pycache__' \
+            --exclude 'db/*.sqlite3' --exclude static_root \
+            --exclude rustdesk_server_api/secret_config.py \
+            ./ "deploy-target:$RELEASE/"
+      - name: Activate release
+        run: ssh deploy-target "bash '$DEPLOY_PATH/releases/$GITHUB_SHA/deploy/remote-deploy.sh' '$DEPLOY_PATH' '$GITHUB_SHA'"

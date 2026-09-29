@@ -14,6 +14,7 @@ test
 
 # Files
 *.bat
+!static/configs/install.bat
 server.ico
 start.py
 
@@ -23,3 +24,9 @@ dist
 dist-
 
 LICENSE.rst
+# Secrets
+rustdesk_server_api/secret_config.py
+
+# Local database and collectstatic output
+db/*.sqlite3
+static_root/

@@ -72,10 +72,10 @@ fi
 echo "Installing RustDesk"
 if [ "${ID}" = "debian" ] || [ "$OS" = "Ubuntu" ] || [ "$OS" = "Debian" ]  || [ "${UPSTREAM_ID}" = "ubuntu" ] || [ "${UPSTREAM_ID}" = "debian" ]; then
     wget https://github.com/rustdesk/rustdesk/releases/download/"${VERSION}"/rustdesk-"${VERSION}"-"${ARCH}".deb
-    apt-get install -fy ./rustdesk-"${VERSION}"-"${ARCH}".deb > null
+    apt-get install -fy ./rustdesk-"${VERSION}"-"${ARCH}".deb > /dev/null
 elif [ "$OS" = "CentOS" ] || [ "$OS" = "RedHat" ] || [ "$OS" = "Fedora Linux" ]  || [ "${UPSTREAM_ID}" = "rhel" ] ; then
     wget https://github.com/rustdesk/rustdesk/releases/download/"${VERSION}"/rustdesk-"${VERSION}"-0."${ARCH}".rpm
-    yum localinstall ./rustdesk-"${VERSION}"-0."${ARCH}".rpm -y > null
+    yum localinstall ./rustdesk-"${VERSION}"-0."${ARCH}".rpm -y > /dev/null
 else
     echo "Unsupported OS"
     # here you could ask the user for permission to try and install anyway

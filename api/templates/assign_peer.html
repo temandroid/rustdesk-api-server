@@ -8,7 +8,8 @@
         <div class="layui-card">
           <div class="layui-card-header">{{ "Assign Client to User" }}</div>
           <div class="layui-card-body">
-            <form action="/api/assign_peer" method="post" enctype="multipart/form-data">
+            <form action="{% url 'assign_peer' %}" method="post" enctype="multipart/form-data">
+                {% csrf_token %}
                 {{ form.uid }}<br><br>
                 <label for="{{ form.clientID.id_for_label }}">Rustdesk client ID:</label>
                 {{ form.clientID }}<br><br>
@@ -23,6 +24,6 @@
     </div>
 </div>
 <script>
-    document.getElementById("{{ form.clientID.id_for_label }}").value = "{{rid}}"
+    document.getElementById("{{ form.clientID.id_for_label }}").value = "{{rid|escapejs}}"
 </script>
 {% endblock %}

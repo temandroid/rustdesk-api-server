@@ -29,7 +29,7 @@ exit
 }
 
 If (!(Test-Path C:\Temp)) {
-  New-Item -ItemType Directory -Force -Path C:\Temp > null
+  New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
 }
 
 cd C:\Temp
@@ -60,7 +60,7 @@ cd $env:ProgramFiles\RustDesk\
 
 .\RustDesk.exe --config $rustdesk_cfg
 
-.\RustDesk.exe--password $rustdesk_pw
+.\RustDesk.exe --password $rustdesk_pw
 
 Write-Output "..............................................."
 # Show the value of the ID Variable

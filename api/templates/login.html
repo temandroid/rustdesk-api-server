@@ -15,6 +15,7 @@
 <div class="login-main">
     <header class="layui-elip">Login</header>
     <form class="layui-form">
+        {% csrf_token %}
         <div class="layui-input-inline">
             <input type="text" name="account" required lay-verify="required" placeholder="Username" autocomplete="off"
                    class="layui-input">
@@ -41,10 +42,11 @@
         form.on('submit(login)',function (data) {
             console.log(data.field);
             $.ajax({
-                url:'/api/user_action?action=login',
+                url:'{% url 'user_action' %}?action=login',
                 data:data.field,
                 dataType:'json',
                 type:'post',
+                headers:{'X-CSRFToken': $('input[name=csrfmiddlewaretoken]').val()},
 
                 success: function(resp) {
 		    			if(resp.code==1) {

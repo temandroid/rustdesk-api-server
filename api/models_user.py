@@ -1,9 +1,7 @@
-# cython:language_level=3
 from django.db import models
 from django.contrib.auth.models import (
     BaseUserManager, AbstractBaseUser, PermissionsMixin
 )
-from .models_work import *
 
 
 class MyUserManager(BaseUserManager):
@@ -24,6 +22,7 @@ class MyUserManager(BaseUserManager):
             
         )
         user.is_admin = True
+        user.is_superuser = True
         user.save(using=self._db)
         return user
 
@@ -45,7 +44,7 @@ class UserProfile(AbstractBaseUser, PermissionsMixin):
     objects = MyUserManager()
  
     USERNAME_FIELD = 'username'  # Field used as username
-    REQUIRED_FIELDS = ['password']  # Fields that must be filled in
+    REQUIRED_FIELDS = []  # Fields prompted by createsuperuser besides username and password
     
     
     def get_full_name(self):
@@ -59,15 +58,13 @@ class UserProfile(AbstractBaseUser, PermissionsMixin):
     def __str__(self):  # __unicode__ on Python 2
         return self.username
  
-    def has_perm(self, perm, obj=None):  # Does the user have the specified permission?
-        "Does the user have a specific permission?"
-        # Simplest possible answer: Yes, always
-        return True
- 
+    def has_perm(self, perm, obj=None):
+        "Does the user have a specific permission? Only active admins have any."
+        return self.is_active and self.is_admin
+
     def has_module_perms(self, app_label):
         "Does the user have permissions to view the app `app_label`?"
-        # Simplest possible answer: Yes, always
-        return True
+        return self.is_active and self.is_admin
         
 
 

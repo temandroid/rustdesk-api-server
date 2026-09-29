@@ -51,8 +51,8 @@
           </span>
           {% endif %}
           {% if page_obj.has_next %}
-              <button class="layui-btn" > <a href="?page={{ page_obj.next_page_number }}">{{ "First" }}</a></button>
-              <button class="layui-btn" ><a href="?page={{ page_obj.paginator.num_pages }}">{{ "Next" }} &raquo;</a></button>
+              <button class="layui-btn" > <a href="?page={{ page_obj.next_page_number }}">{{ "Next" }}</a></button>
+              <button class="layui-btn" ><a href="?page={{ page_obj.paginator.num_pages }}">{{ "Last" }} &raquo;</a></button>
           {% endif %}
       </span>
   </div>  
