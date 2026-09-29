@@ -152,13 +152,20 @@ GitHub Actions (`.github/workflows/ci.yml`) запускается на кажд
 
 Изменения в любых файлах требуют ревью владельца репозитория (`.github/CODEOWNERS`).
 
-## Деплой на сервер по SSH
+## Деплой на сервер
 
 После каждого push в `master` (то есть после слияния PR) и успешного прохождения всех проверок CI job **Deploy to production** выкатывает код на сервер. Запустить деплой вручную можно в Actions → CI → Run workflow (ветка `master`).
 
-Общая часть для всех способов:
+Как job попадает на сервер, задаёт переменная репозитория `DEPLOY_VIA` (Settings → Secrets and variables → Actions → Variables):
 
-1. Код копируется через `rsync` по SSH в новый каталог `<DEPLOY_PATH>/releases/<commit>`. Серверу не нужен доступ к GitHub.
+| `DEPLOY_VIA` | Как работает | Когда подходит |
+|--------------|--------------|----------------|
+| не задана (по умолчанию) | Job выполняется на **self-hosted runner**, установленном на самом сервере (метка `rustdesk-deploy`). Runner сам подключается к GitHub исходящим HTTPS-соединением, входящие порты открывать не нужно. | Сервер недоступен из интернета по SSH: закрытый порт, NAT, внутренняя сеть. |
+| `ssh` | Job выполняется на обычном раннере GitHub и подключается к серверу по SSH. | На сервер можно зайти по SSH из интернета. |
+
+Дальше для обоих вариантов одинаково:
+
+1. Код копируется через `rsync` в новый каталог `<DEPLOY_PATH>/releases/<commit>`. Что не копируется, перечислено в `deploy/rsync-exclude.txt`.
 2. На сервере запускается `deploy/remote-deploy.sh`. Он выбирает способ по `DEPLOY_METHOD` в `<DEPLOY_PATH>/shared/.env`.
 3. Перед миграциями делается резервная копия базы в `<DEPLOY_PATH>/backups`. База лежит в `<DEPLOY_PATH>/shared/db/db.sqlite3`.
 4. После запуска скрипт проверяет, что сервер отвечает (`HEALTHCHECK_URL`). Если сервер не ответил или упали миграции, скрипт возвращает предыдущую версию и базу из резервной копии, и job завершается ошибкой.
@@ -192,7 +199,7 @@ sudo chmod 600 /opt/rustdesk-api/shared/.env
 sudo usermod -aG docker deploy
 ```
 
-Контейнер работает от имени пользователя `deploy`, поэтому база в `shared/db` принадлежит ему. Отдельный compose-проект `rustdesk-api` не затрагивает контейнеры `hbbs` и `hbbr`. Имейте в виду, что членство в группе `docker` фактически даёт права root на сервере — используйте отдельный ключ только для деплоя.
+Контейнер работает от имени пользователя `deploy`, поэтому база в `shared/db` принадлежит ему. Отдельный compose-проект `rustdesk-api` не затрагивает контейнеры `hbbs` и `hbbr`. Имейте в виду, что членство в группе `docker` фактически даёт права root на сервере.
 
 **Для `DEPLOY_METHOD=systemd`:**
 
@@ -208,6 +215,38 @@ sudo chmod 440 /etc/sudoers.d/rustdesk-api
 
 Если сервер уже работал из клона git, перенесите базу в `/opt/rustdesk-api/shared/db/db.sqlite3` до первого деплоя.
 
+### Self-hosted runner (вариант по умолчанию)
+
+1. В GitHub откройте **Settings → Actions → Runners → New self-hosted runner**, выберите Linux и свою архитектуру. GitHub покажет команды с одноразовым токеном.
+2. Выполните их на сервере от имени пользователя `deploy` в его домашнем каталоге. В команде `config.sh` добавьте метку `rustdesk-deploy`:
+
+```bash
+sudo -iu deploy
+mkdir actions-runner && cd actions-runner
+# скачивание и распаковка — командами со страницы GitHub
+./config.sh --url https://github.com/temandroid/rustdesk-api-server --token <токен со страницы GitHub> \
+  --name rustdesk-prod --labels rustdesk-deploy --unattended
+exit
+```
+
+3. Установите runner как сервис, который работает от пользователя `deploy`:
+
+```bash
+cd ~deploy/actions-runner
+sudo ./svc.sh install deploy
+sudo ./svc.sh start
+```
+
+После этого runner появится в Settings → Actions → Runners со статусом Idle.
+
+Про безопасность runner'а:
+
+- На runner'е выполняется только job деплоя из `master` в окружении `production`. Все проверки и PR выполняются на раннерах GitHub.
+- Runner работает с правами пользователя `deploy`. Если репозиторий станет публичным, кто угодно сможет открыть PR, поэтому не меняйте `runs-on` у других jobs на `self-hosted`.
+- Серверу нужен только исходящий доступ к GitHub по HTTPS.
+
+### Вариант через SSH (`DEPLOY_VIA=ssh`)
+
 SSH-ключ только для деплоя:
 
 ```bash
@@ -219,6 +258,8 @@ cat rustdesk-deploy.pub | sudo -u deploy tee -a ~deploy/.ssh/authorized_keys
 ssh-keyscan -p 22 <адрес сервера>
 ```
 
+Порт SSH должен быть доступен из интернета: раннеры GitHub подключаются с меняющихся адресов.
+
 ### Настройка GitHub (один раз)
 
 В **Settings → Environments** создайте окружение `production`:
@@ -227,14 +268,14 @@ ssh-keyscan -p 22 <адрес сервера>
 - **Required reviewers:** добавьте себя. Тогда каждый деплой ждёт вашего подтверждения в Actions. Если не нужно, пропустите.
 - **Environment secrets:**
 
-| Секрет | Значение |
-|--------|----------|
-| `SSH_HOST` | адрес сервера |
-| `SSH_USER` | `deploy` |
-| `SSH_PORT` | порт SSH (необязательно, по умолчанию 22) |
-| `SSH_PRIVATE_KEY` | содержимое файла `rustdesk-deploy` (закрытый ключ) |
-| `SSH_KNOWN_HOSTS` | вывод `ssh-keyscan` |
-| `DEPLOY_PATH` | `/opt/rustdesk-api` |
+| Секрет | Значение | Нужен для |
+|--------|----------|-----------|
+| `DEPLOY_PATH` | каталог приложения на сервере | обоих вариантов (необязательно, по умолчанию `/opt/rustdesk-api`) |
+| `SSH_HOST` | адрес сервера | `DEPLOY_VIA=ssh` |
+| `SSH_USER` | `deploy` | `DEPLOY_VIA=ssh` |
+| `SSH_PORT` | порт SSH (необязательно, по умолчанию 22) | `DEPLOY_VIA=ssh` |
+| `SSH_PRIVATE_KEY` | содержимое файла `rustdesk-deploy` (закрытый ключ) | `DEPLOY_VIA=ssh` |
+| `SSH_KNOWN_HOSTS` | вывод `ssh-keyscan` | `DEPLOY_VIA=ssh` |
 
 ### Ручной откат
 
