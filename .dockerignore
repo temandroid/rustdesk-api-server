@@ -1,0 +1,9 @@
+.git
+.github
+**/__pycache__
+*.pyc
+db/*.sqlite3
+static_root
+rustdesk_server_api/secret_config.py
+venv
+.venv
