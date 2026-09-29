@@ -4,9 +4,7 @@
 {% block content %} 
 <div style="padding: 20px; background-color: #F2F2F2;">
   <div class="layui-row layui-col-space15">
-{% autoescape off %}
-    {{ msg }}
- {% endautoescape %}
+    {{ msg|linebreaksbr }}
 </div></div>
 
 {% endblock %}

@@ -5,6 +5,8 @@ import time
 import datetime
 import hashlib
 import math
+import secrets
+from django.views.decorators.csrf import csrf_exempt
 from django.contrib import auth
 from django.forms.models import model_to_dict
 from api.models import RustDeskToken, UserProfile, RustDeskTag, RustDeskPeer, RustDesDevice, ConnLog, FileLog
@@ -13,7 +15,29 @@ import copy
 from .views_front import *
 from django.conf import settings
 
+# Fields a client may set on RustDesDevice via /api/sysinfo
+SYSINFO_FIELDS = ('cpu', 'hostname', 'memory', 'os', 'username', 'version')
 
+
+def token_expired(token):
+    age = datetime.datetime.now() - token.create_time
+    return age.total_seconds() >= EFFECTIVE_SECONDS
+
+
+def get_valid_token(request):
+    # Returns the RustDeskToken from the Authorization header, or None if missing or expired
+    access_token = request.META.get('HTTP_AUTHORIZATION', '')
+    access_token = access_token.split('Bearer ')[-1].strip()
+    if not access_token:
+        return None
+    token = RustDeskToken.objects.filter(Q(access_token=access_token)).first()
+    if token and token_expired(token):
+        token.delete()
+        return None
+    return token
+
+
+@csrf_exempt
 def login(request):
     result = {}
     if request.method == 'GET':
@@ -43,12 +67,9 @@ def login(request):
     token = RustDeskToken.objects.filter(Q(uid=user.id) & Q(username=user.username) & Q(rid=user.rid)).first()
     
     # Check if expired
-    if token:
-        now_t = datetime.datetime.now()
-        nums = (now_t - token.create_time).seconds if now_t > token.create_time else 0
-        if nums >= EFFECTIVE_SECONDS:
-            token.delete()
-            token = None
+    if token and token_expired(token):
+        token.delete()
+        token = None
     
     if not token:
         # Get and save token
@@ -57,7 +78,7 @@ def login(request):
             uid=user.id,
             uuid=user.uuid,
             rid=user.rid,
-            access_token=getStrSha256(str(time.time())+settings.SALT_CRED)
+            access_token=secrets.token_urlsafe(32)
         )
         token.save()
 
@@ -67,38 +88,29 @@ def login(request):
     return JsonResponse(result)
 
 
+@csrf_exempt
 def logout(request):
     if request.method == 'GET':
         result = {'error':'Wrong request method!'}
         return JsonResponse(result)
     
-    data = json.loads(request.body.decode())
-    rid = data.get('id', '')
-    uuid = data.get('uuid', '')
-    user = UserProfile.objects.filter(Q(rid=rid) & Q(uuid=uuid)).first()
-    if not user:
+    token = get_valid_token(request)
+    if not token:
         result = {'error':'Abnormal request!'}
         return JsonResponse(result)
-    token = RustDeskToken.objects.filter(Q(uid=user.id) & Q(rid=user.rid)).first()
-    if token:
-        token.delete()
+    token.delete()
 
     result = {'code':1}
     return JsonResponse(result)
 
 
+@csrf_exempt
 def currentUser(request):
     result = {}
     if request.method == 'GET':
         result['error'] = 'Incorrect submission method!'
         return JsonResponse(result)
-    postdata = json.loads(request.body)
-    rid = postdata.get('id', '')
-    uuid = postdata.get('uuid', '')
-    
-    access_token = request.META.get('HTTP_AUTHORIZATION', '')
-    access_token = access_token.split('Bearer ')[-1]
-    token = RustDeskToken.objects.filter(Q(access_token=access_token)).first()
+    token = get_valid_token(request)
     user = None
     if token:
         user = UserProfile.objects.filter(Q(id=token.uid)).first()
@@ -111,12 +123,11 @@ def currentUser(request):
     return JsonResponse(result)
 
 
+@csrf_exempt
 def ab(request):
     '''
     '''
-    access_token = request.META.get('HTTP_AUTHORIZATION', '')
-    access_token = access_token.split('Bearer ')[-1]
-    token = RustDeskToken.objects.filter(Q(access_token=access_token)).first()
+    token = get_valid_token(request)
     if not token:
         result = {'error':'Error pulling the list!'}
         return JsonResponse(result)
@@ -199,6 +210,7 @@ def ab(request):
     }
     return JsonResponse(result)
 
+@csrf_exempt
 def sysinfo(request):
     # Device information is sent only after client registration
     result = {}
@@ -223,26 +235,31 @@ def sysinfo(request):
         )
         device.save()
     else:
-        postdata2 = copy.copy(postdata)
-        postdata2['rid'] = postdata2['id']
-        postdata2.pop('id')
-        postdata2['ip'] = client_ip
-        RustDesDevice.objects.filter(Q(rid=postdata['id']) & Q(uuid=postdata['uuid'])).update(**postdata2)
+        for field in SYSINFO_FIELDS:
+            if field in postdata:
+                setattr(device, field, postdata[field])
+        device.ip = client_ip
+        device.save()
     result['data'] = 'ok'
     return JsonResponse(result)
 
+@csrf_exempt
 def heartbeat(request):
     postdata = json.loads(request.body)
     device = RustDesDevice.objects.filter(Q(rid=postdata['id']) & Q(uuid=postdata['uuid'])).first()
     if device:
         device.save()
-    # Token keep-alive
-    create_time = datetime.datetime.now() + datetime.timedelta(seconds=EFFECTIVE_SECONDS)
-    RustDeskToken.objects.filter(Q(rid=postdata['id']) & Q(uuid=postdata['uuid'])).update(create_time=create_time)
+    # Token keep-alive: extend only tokens that have not expired yet
+    now = datetime.datetime.now()
+    RustDeskToken.objects.filter(
+        Q(rid=postdata['id']) & Q(uuid=postdata['uuid'])
+        & Q(create_time__gt=now - datetime.timedelta(seconds=EFFECTIVE_SECONDS))
+    ).update(create_time=now)
     result = {}
     result['data'] = 'Online'
     return JsonResponse(result)
 
+@csrf_exempt
 def audit(request):
     postdata = json.loads(request.body)
     #print(postdata)
@@ -306,6 +323,7 @@ def convert_filesize(size_bytes):
     s = round(size_bytes / p, 2)
     return "%s %s" % (s, size_name[i])
     
+@csrf_exempt
 def users(request):
     result = {
     'code':1,
@@ -313,6 +331,7 @@ def users(request):
     }
     return JsonResponse(result)
     
+@csrf_exempt
 def peers(request):
     result = {
     'code':1,

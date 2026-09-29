@@ -5,6 +5,7 @@
 {% block content %}
  
 <div class="layui-container">
+{% csrf_token %}
     <div class="layui-card layui-col-md3-offset2">
         <div class="layui-card-header">Adjust the Machine to be Shared on the Right Side</div>
         <div id="showdevice"></div>
@@ -54,7 +55,7 @@
       ,title: ['My Machines', 'Shared Machines']  // Custom titles
       ,data: [// Data source
         {% for peer in peers %}
-          {"value": "{{peer.id}}", "title": "{{peer.name}}"},
+          {"value": "{{peer.id}}", "title": "{{peer.name|escapejs}}"},
         {% endfor %}
       ]  
       ,id: 'device' 
@@ -65,6 +66,7 @@
         $.ajax({
             url:'/api/share',
             type:'post',
+            headers:{'X-CSRFToken': $('input[name=csrfmiddlewaretoken]').val()},
             dataType:'json',
             data:{
                 data:JSON.stringify(getData),

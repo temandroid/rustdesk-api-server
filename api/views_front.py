@@ -1,10 +1,9 @@
 # cython:language_level=3
 from django.shortcuts import render
-from django.http import HttpResponseRedirect
-from django.contrib.auth.hashers import make_password
+from django.http import HttpResponseRedirect, HttpResponseNotAllowed, Http404
 from django.http import JsonResponse
 from django.db.models import Q
-from django.contrib.auth.decorators import login_required
+from django.contrib.auth.decorators import login_required, user_passes_test
 from django.contrib import auth
 from api.models import RustDeskPeer, RustDesDevice, UserProfile, ShareLink, ConnLog, FileLog
 from django.forms.models import model_to_dict
@@ -18,15 +17,16 @@ from django.db.models import Model
 import json
 import time
 import hashlib
+import secrets
 import sys
 from .forms import AddPeerForm, EditPeerForm, AssignPeerForm
 
 EFFECTIVE_SECONDS = 7200
+SHARELINK_EFFECTIVE_SECONDS = 15 * 60
+LOGIN_URL = '/api/user_action?action=login'
 
-def getStrSha256(s):
-    input_bytes = s.encode('utf-8')
-    sha256_hash = hashlib.sha256(input_bytes)
-    return sha256_hash.hexdigest()
+# Pages available only to administrators (is_admin)
+admin_required = user_passes_test(lambda u: u.is_authenticated and u.is_admin, login_url=LOGIN_URL)
 
 def model_to_dict2(instance, fields=None, exclude=None, replace=None, default=None):
     """
@@ -102,14 +102,11 @@ def index(request):
 
 def user_action(request):
     action = request.GET.get('action', '')
-    if action == '':
-        return
-    if action == 'login':
-        return user_login(request)
-    if action == 'register':
-        return user_register(request)
     if action == 'logout':
         return user_logout(request)
+    if action == 'login' or request.method == 'GET':
+        return user_login(request)
+    return HttpResponseNotAllowed(['GET'])
 
 def user_login(request):
     # Handles user login
@@ -127,46 +124,6 @@ def user_login(request):
         return JsonResponse({'code':1, 'url':'/api/work'})
     else:
         return JsonResponse({'code':0, 'msg':'Account or password incorrect!'})
-
-def user_register(request):
-    # Handles user registration
-    info = ''
-    if request.method == 'GET':
-        return render(request, 'reg.html')
-
-    result = {
-        'code':0,
-        'msg':''
-    }
-    username = request.POST.get('user', '')
-    password1 = request.POST.get('pwd', '')
-
-    if len(username) <= 3:
-        info = 'Username must be longer than 3 characters'
-        result['msg'] = info
-        return JsonResponse(result)
-
-    if len(password1)<8 or len(password1)>20:
-        info = 'Password length does not meet requirements, should be 8~20 characters.'
-        result['msg'] = info
-        return JsonResponse(result)
-
-    user = UserProfile.objects.filter(Q(username=username)).first()
-    if user:
-        info = 'Username already exists.'
-        result['msg'] = info
-        return JsonResponse(result)
-    user = UserProfile(
-        username=username,
-        password=make_password(password1),
-        is_admin = True if UserProfile.objects.count()==0 else False,
-        is_superuser = True if UserProfile.objects.count()==0 else False,
-        is_active = True
-    )
-    user.save()
-    result['msg'] = info
-    result['code'] = 1
-    return JsonResponse(result)
 
 @login_required(login_url='/api/user_action?action=login')
 def user_logout(request):
@@ -257,15 +214,14 @@ def work(request):
 
 def check_sharelink_expired(sharelink):
     # Checks if a share link is expired
-    now = datetime.datetime.now()
-    if sharelink.create_time > now:
-        return False
-    if (now - sharelink.create_time).seconds <15 * 60:
-        return False
-    else:
-        sharelink.is_expired = True
-        sharelink.save()
+    if sharelink.is_expired:
         return True
+    age = datetime.datetime.now() - sharelink.create_time
+    if age.total_seconds() < SHARELINK_EFFECTIVE_SECONDS:
+        return False
+    sharelink.is_expired = True
+    sharelink.save()
+    return True
 
 @login_required(login_url='/api/user_action?action=login')
 def share(request):
@@ -281,54 +237,57 @@ def share(request):
     peers = [{'id':ix+1, 'name':f'{p.rid}|{p.alias}'} for ix, p in enumerate(peers)]
     sharelinks = [{'shash':s.shash, 'is_used':s.is_used, 'is_expired':s.is_expired, 'create_time':s.create_time, 'peers':s.peers} for ix, s in enumerate(sharelinks)]
 
-    if request.method == 'GET':
-        url = request.build_absolute_uri()
-        if url.endswith('share'):
-            return render(request, 'share.html', {'peers':peers, 'sharelinks':sharelinks})
+    url = request.build_absolute_uri()
+    shash = '' if request.path.rstrip('/').endswith('share') else request.path.rstrip('/').split('/')[-1]
+    if request.method == 'GET' and not shash:
+        return render(request, 'share.html', {'peers':peers, 'sharelinks':sharelinks})
+    if shash:
+        # Accepting a share link changes data, so GET only shows a confirmation form
+        if request.method == 'GET':
+            return render(request, 'share_accept.html', {'url':url})
+        sharelink = ShareLink.objects.filter(Q(shash=shash) & Q(is_used=False) & Q(is_expired=False)).first()
+        msg = ''
+        title = 'Success'
+        if not sharelink or check_sharelink_expired(sharelink):
+            title = 'Error'
+            msg = f'Link {url}:\nThe share link does not exist or has expired.'
         else:
-            shash = url.split('/')[-1]
-            sharelink = ShareLink.objects.filter(Q(shash=shash))
-            msg = ''
-            title = 'Success'
-            if not sharelink:
+            if str(request.user.id) == str(sharelink.uid):
                 title = 'Error'
-                msg = f'Link {url}:<br>The share link does not exist or has expired.'
+                msg = f'Link {url}:\n\nYou can not share the link with yourself, can you ! '
             else:
-                sharelink = sharelink[0]
-                if str(request.user.id) == str(sharelink.uid):
-                    title = 'Error'
-                    msg = f'Link {url}:<br><br>You can not share the link with yourself, can you ! '
-                else:
-                    sharelink.is_used = True
-                    sharelink.save()
-                    peers = sharelink.peers
-                    peers = peers.split(',')
-                    # Skip if one's own peers overlap
-                    peers_self_ids = [x.rid for x in RustDeskPeer.objects.filter(Q(uid=request.user.id))]
-                    peers_share = RustDeskPeer.objects.filter(Q(rid__in=peers) & Q(uid=sharelink.uid))
-                    peers_share_ids = [x.rid for x in peers_share]
+                # Mark as used atomically so the link can be redeemed only once
+                claimed = ShareLink.objects.filter(Q(id=sharelink.id) & Q(is_used=False)).update(is_used=True)
+                if not claimed:
+                    msg = f'Link {url}:\nThe share link does not exist or has expired.'
+                    return render(request, 'msg.html', {'title':'Error', 'msg':msg})
+                peers = sharelink.peers.split(',')
+                # Skip if one's own peers overlap
+                peers_self_ids = [x.rid for x in RustDeskPeer.objects.filter(Q(uid=request.user.id))]
+                peers_share = RustDeskPeer.objects.filter(Q(rid__in=peers) & Q(uid=sharelink.uid))
+                peers_share_ids = [x.rid for x in peers_share]
 
-                    for peer in peers_share:
-                        if peer.rid in peers_self_ids:
-                            continue
-                        
-                        peer_f = RustDeskPeer.objects.filter(Q(rid=peer.rid) & Q(uid=sharelink.uid))
-                        if not peer_f:
-                            msg += f"{peer.rid} already exists,"
-                            continue
-                        
-                        if len(peer_f) > 1:
-                             msg += f'{peer.rid} has multiple instances, skipped. '
-                             continue
-                        peer = peer_f[0]
-                        peer.id = None
-                        peer.uid = request.user.id
-                        peer.save()
-                        msg += f"{peer.rid},"
+                for peer in peers_share:
+                    if peer.rid in peers_self_ids:
+                        continue
+                    
+                    peer_f = RustDeskPeer.objects.filter(Q(rid=peer.rid) & Q(uid=sharelink.uid))
+                    if not peer_f:
+                        msg += f"{peer.rid} already exists,"
+                        continue
+                    
+                    if len(peer_f) > 1:
+                         msg += f'{peer.rid} has multiple instances, skipped. '
+                         continue
+                    peer = peer_f[0]
+                    peer.id = None
+                    peer.uid = request.user.id
+                    peer.save()
+                    msg += f"{peer.rid},"
 
-                    msg += 'has been successfully acquired.'
+                msg += 'has been successfully acquired.'
 
-            return render(request, 'msg.html', {'title':msg, 'msg':msg})
+        return render(request, 'msg.html', {'title':title, 'msg':msg})
     else:
         data = request.POST.get('data', '[]')
 
@@ -339,7 +298,7 @@ def share(request):
         rustdesk_ids = ','.join(rustdesk_ids)
         sharelink = ShareLink(
             uid=request.user.id,
-            shash = getStrSha256(str(time.time())+settings.SALT_CRED),
+            shash = secrets.token_urlsafe(32),
             peers=rustdesk_ids,
         )
         sharelink.save()
@@ -409,14 +368,14 @@ def get_file_log():
 
     return [v for k, v in new_ordered_dict.items()]
 
-@login_required(login_url='/api/user_action?action=login')
+@admin_required
 def conn_log(request):
     paginator = Paginator(get_conn_log(), 20)
     page_number = request.GET.get('page')
     page_obj = paginator.get_page(page_number)
     return render(request, 'show_conn_log.html', {'page_obj':page_obj})
 
-@login_required(login_url='/api/user_action?action=login')
+@admin_required
 def file_log(request):
     paginator = Paginator(get_file_log(), 20)
     page_number = request.GET.get('page')
@@ -467,7 +426,9 @@ def edit_peer(request):
             alias = form.cleaned_data['alias']
             tags = form.cleaned_data['tags']
 
-            updated_peer = RustDeskPeer.objects.get(rid=rid,uid=uid)
+            updated_peer = RustDeskPeer.objects.filter(rid=rid, uid=uid).first()
+            if not updated_peer:
+                raise Http404('Peer not found')
             updated_peer.username=username
             updated_peer.hostname=hostname
             updated_peer.platform=plat
@@ -480,7 +441,9 @@ def edit_peer(request):
             print(form.errors)
     else:
         rid = request.GET.get('rid','')
-        peer = RustDeskPeer.objects.get(rid=rid)
+        peer = RustDeskPeer.objects.filter(Q(rid=rid) & Q(uid=request.user.id)).first()
+        if not peer:
+            raise Http404('Peer not found')
         initial_data = {
             'clientID': rid,
             'alias': peer.alias,
@@ -493,7 +456,7 @@ def edit_peer(request):
         form = EditPeerForm(initial=initial_data)
         return render(request, 'edit_peer.html', {'form': form, 'peer': peer})
     
-@login_required(login_url='/api/user_action?action=login')
+@admin_required
 def assign_peer(request):
     if request.method == 'POST':
         form = AssignPeerForm(request.POST)
@@ -529,7 +492,9 @@ def assign_peer(request):
     
 @login_required(login_url='/api/user_action?action=login')
 def delete_peer(request):
-    rid = request.GET.get('rid')
+    if request.method != 'POST':
+        return HttpResponseNotAllowed(['POST'])
+    rid = request.POST.get('rid')
     peer = RustDeskPeer.objects.filter(Q(uid=request.user.id) & Q(rid=rid))
     peer.delete()
     return HttpResponseRedirect('/api/work')

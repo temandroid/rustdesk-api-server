@@ -23,3 +23,5 @@ dist
 dist-
 
 LICENSE.rst
+# Secrets
+rustdesk_server_api/secret_config.py

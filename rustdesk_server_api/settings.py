@@ -25,9 +25,9 @@ SECURE_CROSS_ORIGIN_OPENER_POLICY = 'same-origin'
 # ID服务器IP或域名，一般与中继服务器，用于web client
 ID_SERVER = os.environ.get("ID_SERVER", '')
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.environ.get("DEBUG", False)
+DEBUG = os.environ.get("DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
 DEFAULT_AUTO_FIELD = 'django.db.models.AutoField'
-ALLOWED_HOSTS = ["*"]
+ALLOWED_HOSTS = [h.strip() for h in os.environ.get("ALLOWED_HOSTS", "*").split(",") if h.strip()]
 AUTH_USER_MODEL = 'api.UserProfile'      #AppName.自定义user
 
 # Application definition
@@ -46,7 +46,7 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
-    #'django.middleware.csrf.CsrfViewMiddleware',   # 取消post的验证。
+    'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
