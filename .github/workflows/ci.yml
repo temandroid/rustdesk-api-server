@@ -24,8 +24,8 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install linters
@@ -43,8 +43,8 @@ jobs:
       matrix:
         python-version: ["3.10", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -61,12 +61,35 @@ jobs:
       - name: Tests
         run: python manage.py test api
 
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build image
+        run: docker build --tag rustdesk-api:ci .
+      - name: Run migrations and start the container
+        run: |
+          mkdir -p "$RUNNER_TEMP/db"
+          chmod 777 "$RUNNER_TEMP/db"
+          opts="--env SECRET_KEY=ci-only --env ALLOWED_HOSTS=127.0.0.1 -v $RUNNER_TEMP/db:/app/db"
+          docker run --rm $opts rustdesk-api:ci python manage.py migrate --noinput
+          docker run --detach --name api -p 21114:21114 $opts rustdesk-api:ci
+      - name: Server responds
+        run: |
+          for _ in $(seq 1 30); do
+            curl -fs -o /dev/null http://127.0.0.1:21114/api/user_action && exit 0
+            sleep 2
+          done
+          docker logs api
+          exit 1
+
   audit:
     name: Dependency vulnerabilities
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install pip-audit
@@ -77,7 +100,7 @@ jobs:
   deploy:
     name: Deploy to production
     # Only after all checks passed, only from master
-    needs: [lint, test, audit]
+    needs: [lint, test, docker, audit]
     if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     environment: production
@@ -90,7 +113,7 @@ jobs:
       SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
       DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Configure SSH
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}

@@ -34,7 +34,8 @@
 
 ```
 rustdesk_server_api/     Настройки Django-проекта (settings.py, urls.py, wsgi/asgi)
-deploy/                  Деплой: скрипт для сервера, unit-файл systemd, пример настроек
+deploy/                  Деплой: скрипты для сервера (Docker и systemd), docker-compose.yml, unit-файл systemd, пример настроек
+Dockerfile               Образ сервера
 api/
   models_user.py         Модель пользователя UserProfile и менеджер
   models_work.py         Токены, теги, устройства (peers/devices), журналы, ссылки общего доступа
@@ -145,6 +146,7 @@ SECRET_KEY=test python manage.py test api
 GitHub Actions (`.github/workflows/ci.yml`) запускается на каждый PR и push в `master` и `dev`:
 
 - **Lint** — `ruff` (синтаксические ошибки, неопределённые имена, неиспользуемые импорты) и `shellcheck` для скриптов установки;
+- **Docker image** — сборка образа, миграции и запуск контейнера с проверкой ответа;
 - **Tests** — на Python 3.10, 3.12 и 3.13: `manage.py check`, проверка, что миграции не отстают от моделей, применение миграций к пустой базе, `collectstatic` и тесты;
 - **Dependency vulnerabilities** — `pip-audit` по `requirements.txt`.
 
@@ -154,33 +156,47 @@ GitHub Actions (`.github/workflows/ci.yml`) запускается на кажд
 
 После каждого push в `master` (то есть после слияния PR) и успешного прохождения всех проверок CI job **Deploy to production** выкатывает код на сервер. Запустить деплой вручную можно в Actions → CI → Run workflow (ветка `master`).
 
-Как это работает:
+Общая часть для всех способов:
 
 1. Код копируется через `rsync` по SSH в новый каталог `<DEPLOY_PATH>/releases/<commit>`. Серверу не нужен доступ к GitHub.
-2. На сервере запускается `deploy/remote-deploy.sh`:
-   - ставит зависимости в `<DEPLOY_PATH>/venv`;
-   - делает `manage.py check`;
-   - делает резервную копию базы в `<DEPLOY_PATH>/backups`;
-   - применяет миграции и `collectstatic`;
-   - переключает симлинк `<DEPLOY_PATH>/current` на новый релиз и перезапускает сервис.
-3. Скрипт проверяет, что сервер отвечает (`HEALTHCHECK_URL`). Если нет, он возвращает предыдущий релиз и базу из резервной копии, перезапускает сервис, и job завершается ошибкой.
-4. Хранятся последние 5 релизов и 10 резервных копий базы.
+2. На сервере запускается `deploy/remote-deploy.sh`. Он выбирает способ по `DEPLOY_METHOD` в `<DEPLOY_PATH>/shared/.env`.
+3. Перед миграциями делается резервная копия базы в `<DEPLOY_PATH>/backups`. База лежит в `<DEPLOY_PATH>/shared/db/db.sqlite3`.
+4. После запуска скрипт проверяет, что сервер отвечает (`HEALTHCHECK_URL`). Если сервер не ответил или упали миграции, скрипт возвращает предыдущую версию и базу из резервной копии, и job завершается ошибкой.
+5. Хранятся последние 5 релизов и 10 резервных копий базы.
+
+| `DEPLOY_METHOD` | Как запускается сервер | Что нужно на сервере |
+|-----------------|------------------------|----------------------|
+| `docker` (по умолчанию) | Образ собирается на сервере из `Dockerfile` и запускается через `deploy/docker-compose.yml` (контейнер `rustdesk-api`, `network_mode: host`, порт 21114) — так же, как `hbbs`/`hbbr` из официального образа RustDesk. | Docker с плагином `compose`, `rsync`, `curl` |
+| `systemd` | Python-окружение `<DEPLOY_PATH>/venv`, симлинк `<DEPLOY_PATH>/current` на активный релиз, сервис systemd `deploy/rustdesk-api.service`. | Python 3.10+ с `venv`, `rsync`, `curl`, желательно `sqlite3` |
 
 ### Подготовка сервера (один раз)
 
-Нужны `python3` (3.10+) с модулем `venv`, `rsync`, `curl` и, желательно, `sqlite3` (для согласованной резервной копии базы).
+Общие шаги:
 
 ```bash
 # пользователь для деплоя и каталоги
-sudo useradd --system --create-home --shell /bin/bash deploy
+sudo useradd --create-home --shell /bin/bash deploy
 sudo mkdir -p /opt/rustdesk-api/shared/db
 sudo chown -R deploy:deploy /opt/rustdesk-api
 
 # настройки: скопируйте deploy/env.example в /opt/rustdesk-api/shared/.env и заполните
 sudo -u deploy nano /opt/rustdesk-api/shared/.env
 sudo chmod 600 /opt/rustdesk-api/shared/.env
+```
 
-# сервис
+В `ALLOWED_HOSTS` должен быть `127.0.0.1`: к этому адресу обращается проверка после деплоя. Ключ для `RUSTDESK_KEY` лежит в каталоге данных `hbbs` — в файле `data/id_ed25519.pub` рядом с его `docker-compose.yml`.
+
+**Для `DEPLOY_METHOD=docker`** пользователю `deploy` нужен доступ к Docker:
+
+```bash
+sudo usermod -aG docker deploy
+```
+
+Контейнер работает от имени пользователя `deploy`, поэтому база в `shared/db` принадлежит ему. Отдельный compose-проект `rustdesk-api` не затрагивает контейнеры `hbbs` и `hbbr`. Имейте в виду, что членство в группе `docker` фактически даёт права root на сервере — используйте отдельный ключ только для деплоя.
+
+**Для `DEPLOY_METHOD=systemd`:**
+
+```bash
 sudo cp deploy/rustdesk-api.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable rustdesk-api
@@ -190,7 +206,7 @@ echo 'deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart rustdesk-api' | sud
 sudo chmod 440 /etc/sudoers.d/rustdesk-api
 ```
 
-В `ALLOWED_HOSTS` должен быть `127.0.0.1`: к этому адресу обращается проверка после деплоя. Если сервер уже работал из клона git, перенесите базу в `DB_PATH` (по умолчанию `/opt/rustdesk-api/shared/db/db.sqlite3`) до первого деплоя.
+Если сервер уже работал из клона git, перенесите базу в `/opt/rustdesk-api/shared/db/db.sqlite3` до первого деплоя.
 
 SSH-ключ только для деплоя:
 
@@ -220,12 +236,26 @@ ssh-keyscan -p 22 <адрес сервера>
 | `SSH_KNOWN_HOSTS` | вывод `ssh-keyscan` |
 | `DEPLOY_PATH` | `/opt/rustdesk-api` |
 
-Если нужно откатиться вручную, переключите симлинк на предыдущий релиз и перезапустите сервис:
+### Ручной откат
+
+Docker:
+
+```bash
+cd /opt/rustdesk-api
+ls releases                       # доступные релизы
+APP_DIR=/opt/rustdesk-api APP_UID=$(id -u) APP_GID=$(id -g) IMAGE_TAG=<commit> \
+  docker compose -f releases/<commit>/deploy/docker-compose.yml up -d
+echo <commit> > current_release
+```
+
+systemd:
 
 ```bash
 ln -sfn /opt/rustdesk-api/releases/<commit> /opt/rustdesk-api/current
 sudo systemctl restart rustdesk-api
 ```
+
+Резервные копии базы — в `/opt/rustdesk-api/backups`.
 
 ## Настройка клиента RustDesk
 

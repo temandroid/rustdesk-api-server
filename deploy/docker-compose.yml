@@ -1,0 +1,17 @@
+# RustDesk API server. Started by deploy/remote-deploy.sh, which sets APP_DIR,
+# IMAGE_TAG, APP_UID and APP_GID. Settings come from ${APP_DIR}/shared/.env.
+name: rustdesk-api
+
+services:
+  api:
+    container_name: rustdesk-api
+    image: rustdesk-api:${IMAGE_TAG:?IMAGE_TAG is not set}
+    env_file: ${APP_DIR:?APP_DIR is not set}/shared/.env
+    environment:
+      DB_PATH: /app/db/db.sqlite3
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    volumes:
+      - ${APP_DIR}/shared/db:/app/db
+    # Same as hbbs/hbbr: listens on port 21114 of the host
+    network_mode: host
+    restart: unless-stopped
