@@ -1,0 +1,7 @@
+# Files not copied to the server on deploy (rsync --exclude-from)
+.git
+.github
+__pycache__
+db/*.sqlite3
+static_root
+rustdesk_server_api/secret_config.py
