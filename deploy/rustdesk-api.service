@@ -1,0 +1,18 @@
+# systemd unit for the server. Copy to /etc/systemd/system/rustdesk-api.service,
+# adjust User and paths if DEPLOY_PATH is not /opt/rustdesk-api, then:
+#   systemctl daemon-reload && systemctl enable rustdesk-api
+[Unit]
+Description=RustDesk API server
+After=network.target
+
+[Service]
+User=deploy
+Group=deploy
+WorkingDirectory=/opt/rustdesk-api/current
+EnvironmentFile=/opt/rustdesk-api/shared/.env
+# Listens on localhost for a reverse proxy; use 0.0.0.0:21114 if clients connect directly
+ExecStart=/opt/rustdesk-api/venv/bin/gunicorn rustdesk_server_api.wsgi:application --bind 127.0.0.1:21114 --workers 2
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

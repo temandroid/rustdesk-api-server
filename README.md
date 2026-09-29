@@ -34,6 +34,7 @@
 
 ```
 rustdesk_server_api/     Настройки Django-проекта (settings.py, urls.py, wsgi/asgi)
+deploy/                  Деплой: скрипт для сервера, unit-файл systemd, пример настроек
 api/
   models_user.py         Модель пользователя UserProfile и менеджер
   models_work.py         Токены, теги, устройства (peers/devices), журналы, ссылки общего доступа
@@ -148,6 +149,83 @@ GitHub Actions (`.github/workflows/ci.yml`) запускается на кажд
 - **Dependency vulnerabilities** — `pip-audit` по `requirements.txt`.
 
 Изменения в любых файлах требуют ревью владельца репозитория (`.github/CODEOWNERS`).
+
+## Деплой на сервер по SSH
+
+После каждого push в `master` (то есть после слияния PR) и успешного прохождения всех проверок CI job **Deploy to production** выкатывает код на сервер. Запустить деплой вручную можно в Actions → CI → Run workflow (ветка `master`).
+
+Как это работает:
+
+1. Код копируется через `rsync` по SSH в новый каталог `<DEPLOY_PATH>/releases/<commit>`. Серверу не нужен доступ к GitHub.
+2. На сервере запускается `deploy/remote-deploy.sh`:
+   - ставит зависимости в `<DEPLOY_PATH>/venv`;
+   - делает `manage.py check`;
+   - делает резервную копию базы в `<DEPLOY_PATH>/backups`;
+   - применяет миграции и `collectstatic`;
+   - переключает симлинк `<DEPLOY_PATH>/current` на новый релиз и перезапускает сервис.
+3. Скрипт проверяет, что сервер отвечает (`HEALTHCHECK_URL`). Если нет, он возвращает предыдущий релиз и базу из резервной копии, перезапускает сервис, и job завершается ошибкой.
+4. Хранятся последние 5 релизов и 10 резервных копий базы.
+
+### Подготовка сервера (один раз)
+
+Нужны `python3` (3.10+) с модулем `venv`, `rsync`, `curl` и, желательно, `sqlite3` (для согласованной резервной копии базы).
+
+```bash
+# пользователь для деплоя и каталоги
+sudo useradd --system --create-home --shell /bin/bash deploy
+sudo mkdir -p /opt/rustdesk-api/shared/db
+sudo chown -R deploy:deploy /opt/rustdesk-api
+
+# настройки: скопируйте deploy/env.example в /opt/rustdesk-api/shared/.env и заполните
+sudo -u deploy nano /opt/rustdesk-api/shared/.env
+sudo chmod 600 /opt/rustdesk-api/shared/.env
+
+# сервис
+sudo cp deploy/rustdesk-api.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable rustdesk-api
+
+# разрешить пользователю deploy только перезапуск сервиса
+echo 'deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart rustdesk-api' | sudo tee /etc/sudoers.d/rustdesk-api
+sudo chmod 440 /etc/sudoers.d/rustdesk-api
+```
+
+В `ALLOWED_HOSTS` должен быть `127.0.0.1`: к этому адресу обращается проверка после деплоя. Если сервер уже работал из клона git, перенесите базу в `DB_PATH` (по умолчанию `/opt/rustdesk-api/shared/db/db.sqlite3`) до первого деплоя.
+
+SSH-ключ только для деплоя:
+
+```bash
+ssh-keygen -t ed25519 -N '' -f rustdesk-deploy -C github-deploy
+# открытый ключ — на сервер
+sudo -u deploy mkdir -p ~deploy/.ssh
+cat rustdesk-deploy.pub | sudo -u deploy tee -a ~deploy/.ssh/authorized_keys
+# ключ хоста сервера для проверки подлинности (сверьте отпечаток с сервером)
+ssh-keyscan -p 22 <адрес сервера>
+```
+
+### Настройка GitHub (один раз)
+
+В **Settings → Environments** создайте окружение `production`:
+
+- **Deployment branches and tags:** только `master`.
+- **Required reviewers:** добавьте себя. Тогда каждый деплой ждёт вашего подтверждения в Actions. Если не нужно, пропустите.
+- **Environment secrets:**
+
+| Секрет | Значение |
+|--------|----------|
+| `SSH_HOST` | адрес сервера |
+| `SSH_USER` | `deploy` |
+| `SSH_PORT` | порт SSH (необязательно, по умолчанию 22) |
+| `SSH_PRIVATE_KEY` | содержимое файла `rustdesk-deploy` (закрытый ключ) |
+| `SSH_KNOWN_HOSTS` | вывод `ssh-keyscan` |
+| `DEPLOY_PATH` | `/opt/rustdesk-api` |
+
+Если нужно откатиться вручную, переключите симлинк на предыдущий релиз и перезапустите сервис:
+
+```bash
+ln -sfn /opt/rustdesk-api/releases/<commit> /opt/rustdesk-api/current
+sudo systemctl restart rustdesk-api
+```
 
 ## Настройка клиента RustDesk
 
