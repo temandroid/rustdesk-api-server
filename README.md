@@ -139,6 +139,16 @@ python manage.py migrate
 SECRET_KEY=test python manage.py test api
 ```
 
+### Проверки перед слиянием (CI)
+
+GitHub Actions (`.github/workflows/ci.yml`) запускается на каждый PR и push в `master` и `dev`:
+
+- **Lint** — `ruff` (синтаксические ошибки, неопределённые имена, неиспользуемые импорты) и `shellcheck` для скриптов установки;
+- **Tests** — на Python 3.10, 3.12 и 3.13: `manage.py check`, проверка, что миграции не отстают от моделей, применение миграций к пустой базе, `collectstatic` и тесты;
+- **Dependency vulnerabilities** — `pip-audit` по `requirements.txt`.
+
+Изменения в любых файлах требуют ревью владельца репозитория (`.github/CODEOWNERS`).
+
 ## Настройка клиента RustDesk
 
 В клиенте откройте **Настройки → Сеть → ID/Relay сервер** и укажите:
