@@ -1,30 +1,30 @@
-import django
-if django.__version__.split('.')[0]>='4':
-    from django.urls import re_path as url
-else:
-    from django.conf.urls import  url, include
+from django.urls import path, re_path
 
-from api import views
- 
+from api import views_api, views_front
+
 urlpatterns = [
-    url(r'^login',views.login),
-    url(r'^logout',views.logout),
-    url(r'^ab',views.ab),
-    url(r'^users',views.users),
-    url(r'^peers',views.peers),
-    url(r'^currentUser',views.currentUser),
-    url(r'^sysinfo',views.sysinfo),
-    url(r'^heartbeat',views.heartbeat),
-    #url(r'^register',views.register), 
-    url(r'^user_action',views.user_action),  # 前端
-    url(r'^work',views.work),  # 前端
-    url(r'^share',views.share),  # 前端
-    url(r'^installers',views.installers),  # 前端
-    url(r'^conn_log',views.conn_log),
-    url(r'^file_log',views.file_log),
-    url(r'^audit',views.audit),
-    url(r'^add_peer',views.add_peer),
-    url(r'^delete_peer',views.delete_peer),
-    url(r'^edit_peer',views.edit_peer),
-    url(r'^assign_peer',views.assign_peer),
-    ]
+    # RustDesk client API
+    path('login', views_api.login),
+    path('logout', views_api.logout),
+    path('ab', views_api.ab),
+    path('users', views_api.users),
+    path('peers', views_api.peers),
+    path('currentUser', views_api.currentUser),
+    path('sysinfo', views_api.sysinfo),
+    path('heartbeat', views_api.heartbeat),
+    # Clients post to /api/audit/conn and /api/audit/file, older ones to /api/audit
+    re_path(r'^audit(?:/(?:conn|file))?$', views_api.audit),
+
+    # Web UI
+    path('user_action', views_front.user_action, name='user_action'),
+    path('work', views_front.work, name='work'),
+    path('share', views_front.share, name='share'),
+    path('share/<str:shash>', views_front.share_accept, name='share_accept'),
+    path('installers', views_front.installers, name='installers'),
+    path('conn_log', views_front.conn_log, name='conn_log'),
+    path('file_log', views_front.file_log, name='file_log'),
+    path('add_peer', views_front.add_peer, name='add_peer'),
+    path('delete_peer', views_front.delete_peer, name='delete_peer'),
+    path('edit_peer', views_front.edit_peer, name='edit_peer'),
+    path('assign_peer', views_front.assign_peer, name='assign_peer'),
+]

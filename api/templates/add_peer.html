@@ -8,7 +8,7 @@
         <div class="layui-card">
           <div class="layui-card-header">{{ "Add Client" }}</div>
           <div class="layui-card-body">
-            <form action="/api/add_peer" method="post" enctype="multipart/form-data">
+            <form action="{% url 'add_peer' %}" method="post" enctype="multipart/form-data">
                 {% csrf_token %}
                 <label for="{{ form.clientID.id_for_label }}">Rustdesk client ID:</label>
                 {{ form.clientID }}<br><br>

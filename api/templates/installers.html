@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+{% extends "base.html" %}{% load static %}
 {% block title %}RustDesk WebUI{% endblock %}
 {% block legend_name %}Installer Files{% endblock %}
 {% block content %}
@@ -20,12 +20,12 @@
             </thead>
             <tbody>
               <tr>
-                <td> <a href="/static/configs/rustdesk-licensed-secure-string.exe">Download</a><br><br><button onclick="copyToClipboard(this)" data-content="https://UniqueURL/static/configs/rustdesk-licensed-secure-string.exe">Copy Link</button></td>
-                <td> <a href="/static/configs/install.bat">Download bat</a><br><br><button onclick="copyToClipboard(this)" data-content="https://UniqueURL/static/configs/install.bat">Copy Link</button><br>
-                <br><a href="/static/configs/install.ps1">Download Powershell</a><br><br><button onclick="copyToClipboard(this)" data-content="https://UniqueURL/static/configs/install.ps1">Copy Link</button></td>
-                <td> <a href="/static/configs/install-linux.sh">Download</a><br><br><button onclick="copyToClipboard(this)" data-content="https://UniqueURL/static/configs/install-linux.sh">Copy Link</button></td> </td>
-                <td> <a href="/static/configs/install-linux.sh">Download</a><br><br><button onclick="copyToClipboard(this)" data-content="https://UniqueURL/static/configs/install-mac.sh">Copy Link</button></td> </td>
-            <td> <img src="/static/configs/qrcode.png"> </td>
+                <td>{% if exe_name %}<a href="{% static 'configs/'|add:exe_name %}">Download</a><br><br><button onclick="copyToClipboard(this)" data-content="{{ api_url }}{% static 'configs/'|add:exe_name %}">Copy Link</button>{% else %}Not available{% endif %}</td>
+                <td> <a href="{% static 'configs/install.bat' %}">Download bat</a><br><br><button onclick="copyToClipboard(this)" data-content="{{ api_url }}{% static 'configs/install.bat' %}">Copy Link</button><br>
+                <br><a href="{% static 'configs/install.ps1' %}">Download Powershell</a><br><br><button onclick="copyToClipboard(this)" data-content="{{ api_url }}{% static 'configs/install.ps1' %}">Copy Link</button></td>
+                <td> <a href="{% static 'configs/install-linux.sh' %}">Download</a><br><br><button onclick="copyToClipboard(this)" data-content="{{ api_url }}{% static 'configs/install-linux.sh' %}">Copy Link</button></td>
+                <td> <a href="{% static 'configs/install-mac.sh' %}">Download</a><br><br><button onclick="copyToClipboard(this)" data-content="{{ api_url }}{% static 'configs/install-mac.sh' %}">Copy Link</button></td>
+                <td>{% if has_qrcode %}<img src="{% static 'configs/qrcode.png' %}">{% else %}Not available{% endif %}</td>
               </tr>
             </tbody>
           </table>
@@ -43,7 +43,7 @@
             </thead>
             <tbody>
               <tr>
-                <td> secure-string <button onclick="copyToClipboard(this)" data-content="secure-string">Copy</button></td>
+                <td>{% if rustdesk_config %} {{ rustdesk_config }} <button onclick="copyToClipboard(this)" data-content="{{ rustdesk_config }}">Copy</button>{% else %}Set RUSTDESK_CONFIG on the server{% endif %}</td>
               </tr>
             </tbody>
           </table>
@@ -63,8 +63,8 @@
             </thead>
             <tbody>
               <tr>
-                <td> https://UniqueURL <button onclick="copyToClipboard(this)" data-content="https://UniqueURL">Copy</button></td>
-                <td> UniqueKey <button onclick="copyToClipboard(this)" data-content="UniqueKey">Copy</button></td>
+                <td> {{ api_url }} <button onclick="copyToClipboard(this)" data-content="{{ api_url }}">Copy</button></td>
+                <td>{% if rustdesk_key %} {{ rustdesk_key }} <button onclick="copyToClipboard(this)" data-content="{{ rustdesk_key }}">Copy</button>{% else %}Set RUSTDESK_KEY on the server{% endif %}</td>
               </tr>
             </tbody>
           </table>

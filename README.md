@@ -7,7 +7,7 @@
 > Проект — форк [kingmo888/rustdesk-api-server](https://github.com/kingmo888/rustdesk-api-server)
 > с англоязычным интерфейсом, журналами подключений и передачи файлов, а также скриптами установки клиента.
 
-> ⚠️ **Безопасность.** Критичные проблемы из [CODE_REVIEW.md](CODE_REVIEW.md) исправлены, но
+> ⚠️ **Безопасность.** Проблемы из [CODE_REVIEW.md](CODE_REVIEW.md) исправлены, но
 > эндпоинты `/api/sysinfo`, `/api/heartbeat` и `/api/audit` по протоколу RustDesk вызываются
 > клиентом без токена и остаются без аутентификации. Выставляйте сервер в интернет только
 > за reverse proxy с HTTPS.
@@ -26,9 +26,9 @@
 
 ## Требования
 
-- Python 3.8+
-- Django (проверено на 5.2) и gunicorn — см. `requirements.txt`
-- SQLite (используется по умолчанию, файл `db/db.sqlite3`)
+- Python 3.10+
+- Django 4.2–5.x (проверено на 5.2) и gunicorn — см. `requirements.txt`
+- SQLite (файл `db/db.sqlite3` создаётся командой `migrate`)
 
 ## Структура проекта
 
@@ -39,12 +39,13 @@ api/
   models_work.py         Токены, теги, устройства (peers/devices), журналы, ссылки общего доступа
   views_api.py           Эндпоинты, которые вызывает клиент RustDesk
   views_front.py         Страницы веб-интерфейса
-  admin_user.py          Регистрация моделей в админ-панели
+  admin.py               Регистрация моделей в админ-панели
   forms.py               Формы добавления/редактирования/назначения устройств
   templates/             HTML-шаблоны (layui)
-  management/commands/   Команда securecreatesuperuser
-db/db.sqlite3            Пустая база данных SQLite
-static/                  Статика: layui, файлы Django admin, скрипты установки (static/configs)
+  tests.py               Тесты
+  management/commands/   Команда securecreatesuperuser (синоним createsuperuser)
+db/                      Каталог базы данных SQLite (сама база не хранится в git)
+static/                  Статика: layui и скрипты установки клиента (static/configs)
 ```
 
 ## Установка и запуск
@@ -59,44 +60,46 @@ python3 -m venv venv
 pip install -r requirements.txt
 ```
 
-### 2. Файл секретов
+### 2. Настройки
 
-`settings.py` импортирует модуль `rustdesk_server_api/secret_config.py`, которого нет в репозитории — без него сервер не запустится. Создайте его:
+Настройки задаются переменными окружения. Их также можно записать в файл `rustdesk_server_api/secret_config.py` (он в `.gitignore`); переменные окружения важнее файла.
+
+| Переменная  | Назначение | По умолчанию |
+|-------------|------------|--------------|
+| `SECRET_KEY` | **Обязательно.** Секретный ключ Django. Без него сервер не запустится. | — |
+| `CSRF_TRUSTED_ORIGINS` | Адреса, по которым открывается веб-интерфейс, через запятую, со схемой: `https://rustdesk-api.example.com`. Нужны для входа через HTTPS reverse proxy. | пусто |
+| `ALLOWED_HOSTS` | Имена хостов сервера через запятую (например, `rustdesk-api.example.com`). | `*` |
+| `DEBUG` | Режим отладки Django: `1`, `true`, `yes` или `on` включают его, любое другое значение — выключает. Не включайте в продакшене. | выключен |
+| `ID_SERVER` | Адрес ID-сервера RustDesk (hbbs). | пусто |
+| `RUSTDESK_KEY` | Публичный ключ hbbs — показывается на странице установщиков. | пусто |
+| `RUSTDESK_CONFIG` | Строка конфигурации сервера из клиента RustDesk — показывается на странице установщиков. | пусто |
+| `TIME_ZONE` | Часовой пояс, в котором хранятся и показываются даты, например `Europe/Moscow`. | `UTC` |
+| `DB_PATH` | Путь к файлу базы SQLite. | `db/db.sqlite3` |
+| `LOG_LEVEL` | Уровень логирования приложения. | `INFO` |
+
+Пример `secret_config.py`:
 
 ```python
-# rustdesk_server_api/secret_config.py
-SECRET_KEY = "длинная-случайная-строка"          # секретный ключ Django
-CSRF_TRUSTED_ORIGINS = ["https://rustdesk-api.example.com"]  # адрес, по которому открывается веб-интерфейс
+SECRET_KEY = "длинная-случайная-строка"
+CSRF_TRUSTED_ORIGINS = ["https://rustdesk-api.example.com"]
 ```
 
-Случайные значения можно сгенерировать так:
+Секретный ключ можно сгенерировать так:
 
 ```bash
 python3 -c "import secrets; print(secrets.token_urlsafe(50))"
 ```
 
-Не добавляйте этот файл в git.
-
-### 3. Переменные окружения
-
-| Переменная  | Назначение | По умолчанию |
-|-------------|------------|--------------|
-| `DEBUG`     | Режим отладки Django: `1`, `true`, `yes` или `on` включают его, любое другое значение — выключает. Не включайте в продакшене. | выключен |
-| `ALLOWED_HOSTS` | Имена хостов, по которым доступен сервер, через запятую (например, `rustdesk-api.example.com`). | `*` |
-| `ID_SERVER` | Адрес ID-сервера RustDesk (hbbs), доступен в шаблонах как `domain`. | `''` |
-
-### 4. База данных и администратор
-
-Файл `db/db.sqlite3` в репозитории не содержит последних миграций, поэтому их нужно применить:
+### 3. База данных и администратор
 
 ```bash
 python manage.py migrate
-python manage.py securecreatesuperuser   # или createsuperuser
+python manage.py createsuperuser
 ```
 
 Самостоятельной регистрации через веб-интерфейс нет — пользователей создаёт администратор в `/admin`.
 
-### 5. Запуск
+### 4. Запуск
 
 Для проверки:
 
@@ -110,9 +113,31 @@ python manage.py runserver 0.0.0.0:21114
 gunicorn rustdesk_server_api.wsgi:application --bind 0.0.0.0:21114
 ```
 
+Статика (`/static/...`) раздаётся самим приложением. Если статику отдаёт веб-сервер, выполните `python manage.py collectstatic` и направьте `/static/` на каталог `static_root/`.
+
 Порт `21114` — стандартный порт API в RustDesk. В продакшене ставьте перед сервером reverse proxy (nginx, Caddy) с HTTPS и передавайте заголовок `X-Forwarded-For` — по нему определяется IP клиента.
 
 Веб-интерфейс: `http://<сервер>:21114/`, админ-панель: `http://<сервер>:21114/admin`.
+
+### Обновление с предыдущих версий
+
+Раньше файл базы `db/db.sqlite3` хранился в git, теперь его в репозитории нет. Чтобы `git pull` не удалил рабочую базу, перед обновлением сохраните её копию:
+
+```bash
+cp db/db.sqlite3 ~/db.sqlite3.backup
+git checkout -- db/db.sqlite3
+git pull
+cp ~/db.sqlite3.backup db/db.sqlite3
+python manage.py migrate
+```
+
+Миграция `0004` переименовывает таблицу устройств и увеличивает длину полей; данные сохраняются. Если раньше вы использовали `SALT_CRED`, эта настройка больше не нужна.
+
+### Тесты
+
+```bash
+SECRET_KEY=test python manage.py test api
+```
 
 ## Настройка клиента RustDesk
 
@@ -132,7 +157,7 @@ gunicorn rustdesk_server_api.wsgi:application --bind 0.0.0.0:21114
 - `VERSION` / `$version` — версия RustDesk;
 - `rustdesk_cfg` — строка конфигурации сервера (экспортируется в клиенте: **Настройки → Сеть → Экспорт конфигурации сервера**) вместо заглушки `secure-string`.
 
-На странице `/api/installers` ссылки, ключ и строка конфигурации — заглушки (`UniqueURL`, `UniqueKey`, `secure-string`), их нужно заменить в `api/templates/installers.html`. Там же упоминаются `rustdesk-licensed-secure-string.exe` и `qrcode.png`, которых нет в репозитории — положите их в `static/configs/` сами.
+Страница `/api/installers` показывает ссылки на эти скрипты, адрес API (берётся из адреса запроса), ключ (`RUSTDESK_KEY`) и строку конфигурации (`RUSTDESK_CONFIG`). Ссылка на `rustdesk-licensed-<RUSTDESK_CONFIG>.exe` и QR-код `qrcode.png` появляются, если положить эти файлы в `static/configs/`.
 
 ## API
 
@@ -146,10 +171,10 @@ gunicorn rustdesk_server_api.wsgi:application --bind 0.0.0.0:21114
 | GET / POST | `/api/ab` | Получение / сохранение адресной книги (теги, цвета, устройства). |
 | POST | `/api/sysinfo` | Информация об устройстве (CPU, память, ОС, версия). |
 | POST | `/api/heartbeat` | Отметка «онлайн» и продление токена. |
-| POST | `/api/audit` | Журнал подключений и передачи файлов. |
+| POST | `/api/audit/conn`, `/api/audit/file` (и `/api/audit`) | Журнал подключений и передачи файлов. |
 | * | `/api/users`, `/api/peers` | Заглушки. |
 
-Токен действует 2 часа (`EFFECTIVE_SECONDS` в `api/views_front.py`) и продлевается heartbeat-запросами.
+Токен действует 2 часа после входа или последнего heartbeat-запроса (`EFFECTIVE_SECONDS` в `api/views_front.py`). При неверном JSON эндпоинты отвечают кодом 400 и полем `error`.
 
 ## Лицензия
 

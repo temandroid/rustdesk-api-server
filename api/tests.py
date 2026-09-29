@@ -1,10 +1,10 @@
 import datetime
 import json
 
-from django.test import TestCase, Client
+from django.test import TestCase, Client, override_settings
 
-from api.models import UserProfile, RustDeskPeer, RustDeskToken, RustDesDevice, ShareLink
-from api.views_front import EFFECTIVE_SECONDS, SHARELINK_EFFECTIVE_SECONDS
+from api.models import UserProfile, RustDeskPeer, RustDeskTag, RustDeskToken, RustDeskDevice, ShareLink, ConnLog, FileLog
+from api.views_front import EFFECTIVE_SECONDS, SHARELINK_EFFECTIVE_SECONDS, ONLINE_SECONDS
 
 
 def api_post(client, path, data, token=None):
@@ -12,6 +12,7 @@ def api_post(client, path, data, token=None):
     return client.post(path, json.dumps(data), content_type='application/json', **headers)
 
 
+@override_settings(PASSWORD_HASHERS=['django.contrib.auth.hashers.MD5PasswordHasher'])
 class BaseTestCase(TestCase):
     def setUp(self):
         self.admin = UserProfile.objects.create_superuser('admin', 'Admin-pass-123')
@@ -170,10 +171,178 @@ class ClientApiTests(BaseTestCase):
         client = Client()
         info = {'id': '900', 'uuid': 'u-900', 'cpu': 'c', 'hostname': 'h', 'memory': 'm', 'os': 'o', 'version': '1'}
         api_post(client, '/api/sysinfo', info)
-        device = RustDesDevice.objects.get(rid='900')
+        device = RustDeskDevice.objects.get(rid='900')
         created = device.create_time
 
         api_post(client, '/api/sysinfo', dict(info, hostname='h2', create_time='2000-01-01 00:00:00', unknown='x'))
         device.refresh_from_db()
         self.assertEqual(device.hostname, 'h2')
         self.assertEqual(device.create_time, created)
+
+
+class DeviceStatusTests(BaseTestCase):
+    def make_device(self, rid, seconds_ago):
+        device = RustDeskDevice.objects.create(rid=rid, uuid=f'u-{rid}', cpu='c', hostname='h', memory='m', os='o', version='1')
+        update_time = datetime.datetime.now() - datetime.timedelta(seconds=seconds_ago)
+        RustDeskDevice.objects.filter(id=device.id).update(update_time=update_time)
+
+    def test_online_status(self):
+        self.make_device('111', 10)
+        # Seen exactly a day ago: .seconds would be 0 and the device would look online
+        self.make_device('222', 86400)
+        client = self.web_client('admin', 'Admin-pass-123')
+        resp = client.get('/api/work')
+        self.assertEqual(resp.context['online_count_single'], 1)
+        self.assertEqual(resp.context['single_info'][0]['status'], 'Online')
+        self.assertEqual(resp.context['online_count_all'], 1)
+        statuses = {x['rid']: x['status'] for x in resp.context['all_info']}
+        self.assertEqual(statuses, {'111': 'Online', '222': 'X'})
+
+    def test_offline_after_timeout(self):
+        self.make_device('111', ONLINE_SECONDS + 1)
+        client = self.web_client('admin', 'Admin-pass-123')
+        self.assertEqual(client.get('/api/work').context['online_count_single'], 0)
+
+    def test_peer_of_deleted_user_does_not_break_page(self):
+        self.make_device('333', 10)
+        RustDeskPeer.objects.create(uid='9999', rid='333', alias='orphan')
+        client = self.web_client('admin', 'Admin-pass-123')
+        resp = client.get('/api/work')
+        self.assertEqual(resp.status_code, 200)
+        owners = {x['rid']: x['rust_user'] for x in resp.context['all_info']}
+        self.assertEqual(owners['333'], '')
+
+    def test_regular_user_does_not_get_all_devices(self):
+        self.make_device('111', 10)
+        client = self.web_client('bob', 'Bob-pass-123')
+        self.assertEqual(client.get('/api/work').context['all_info'], [])
+
+
+class FormErrorTests(BaseTestCase):
+    def test_invalid_forms_are_shown_again(self):
+        bob = self.web_client('bob', 'Bob-pass-123')
+        self.assertEqual(bob.post('/api/add_peer', {'clientID': '333'}).status_code, 200)
+        self.assertEqual(bob.post('/api/edit_peer', {'clientID': '222'}).status_code, 200)
+        self.assertEqual(bob.post('/api/edit_peer', {'clientID': '111', 'alias': 'x'}).status_code, 404)
+        admin = self.web_client('admin', 'Admin-pass-123')
+        self.assertEqual(admin.post('/api/assign_peer', {'clientID': '333'}).status_code, 200)
+
+    def test_edit_peer_works_when_rid_is_shared(self):
+        RustDeskPeer.objects.create(uid=self.admin.id, rid='222', alias='copy')
+        bob = self.web_client('bob', 'Bob-pass-123')
+        self.assertEqual(bob.get('/api/edit_peer?rid=222').status_code, 200)
+        bob.post('/api/edit_peer', {'clientID': '222', 'alias': 'renamed'})
+        self.assertEqual(RustDeskPeer.objects.get(uid=self.bob.id, rid='222').alias, 'renamed')
+        self.assertEqual(RustDeskPeer.objects.get(uid=self.admin.id, rid='222').alias, 'copy')
+
+    def test_user_action_without_action_shows_login(self):
+        self.assertEqual(Client().get('/api/user_action').status_code, 200)
+
+
+class AddressBookTests(BaseTestCase):
+    def post_book(self, client, token, book):
+        return api_post(client, '/api/ab', {'data': json.dumps(book)}, token=token).json()
+
+    def test_save_and_load(self):
+        client = Client()
+        token = self.api_login(client, 'alice', 'Alice-pass-123')
+        book = {
+            'tags': ['work'],
+            'tag_colors': json.dumps({'work': 123}),
+            'peers': [{'id': '555', 'username': 'u', 'hostname': 'h', 'alias': 'a', 'platform': 'p', 'tags': ['work'], 'hash': ''}],
+        }
+        resp = self.post_book(client, token, book)
+        self.assertNotIn('error', resp)
+        self.assertEqual(resp['code'], 1)
+
+        data = json.loads(client.get('/api/ab', HTTP_AUTHORIZATION=f'Bearer {token}').json()['data'])
+        self.assertEqual(data['tags'], ['work'])
+        self.assertEqual(json.loads(data['tag_colors']), {'work': 123})
+        self.assertEqual(data['peers'][0]['id'], '555')
+        self.assertEqual(data['peers'][0]['tags'], ['work'])
+
+    def test_empty_peer_list_clears_book(self):
+        client = Client()
+        token = self.api_login(client, 'bob', 'Bob-pass-123')
+        self.post_book(client, token, {'tags': [], 'peers': []})
+        self.assertFalse(RustDeskPeer.objects.filter(uid=self.bob.id).exists())
+
+    def test_failed_save_keeps_old_book(self):
+        client = Client()
+        token = self.api_login(client, 'bob', 'Bob-pass-123')
+        resp = self.post_book(client, token, {'peers': [{'alias': 'no id'}]})
+        self.assertIn('error', resp)
+        self.assertTrue(RustDeskPeer.objects.filter(uid=self.bob.id, rid='222').exists())
+
+    def test_invalid_tag_color_does_not_break_loading(self):
+        RustDeskTag.objects.create(uid=self.bob.id, tag_name='t', tag_color='red')
+        client = Client()
+        token = self.api_login(client, 'bob', 'Bob-pass-123')
+        resp = client.get('/api/ab', HTTP_AUTHORIZATION=f'Bearer {token}')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(json.loads(resp.json()['data'])['tags'], ['t'])
+
+
+class AuditTests(BaseTestCase):
+    def test_connection_log(self):
+        client = Client()
+        api_post(client, '/api/audit/conn', {'action': 'new', 'conn_id': 7, 'ip': '1.2.3.4', 'id': '111', 'uuid': 'u'})
+        api_post(client, '/api/audit/conn', {'conn_id': 7, 'session_id': 5, 'peer': ['222', 'bob']})
+        api_post(client, '/api/audit/conn', {'action': 'close', 'conn_id': 7})
+        log = ConnLog.objects.get(conn_id='7')
+        self.assertEqual(log.from_id, '222')
+        self.assertIsNotNone(log.conn_end)
+
+    def test_file_log(self):
+        api_post(Client(), '/api/audit/file', {
+            'is_file': True, 'path': '/tmp/a', 'peer_id': '222', 'id': '111', 'type': 1,
+            'info': json.dumps({'ip': '1.2.3.4', 'files': [['a', 2048]]}),
+        })
+        log = FileLog.objects.get()
+        self.assertEqual(log.filesize, '2.0 KB')
+
+    def test_malformed_requests_do_not_fail(self):
+        client = Client()
+        for path, body in (('/api/audit', 'not json'), ('/api/sysinfo', '[]'), ('/api/heartbeat', '{}')):
+            resp = client.post(path, body, content_type='application/json')
+            self.assertEqual(resp.status_code, 400, path)
+            self.assertIn('error', resp.json())
+
+    def test_logs_pages_show_entries_without_start_time(self):
+        ConnLog.objects.create(action='new', conn_id='1', rid='111')
+        ConnLog.objects.create(action='new', conn_id='2', rid='222', conn_start=datetime.datetime.now())
+        FileLog.objects.create(file='a', remote_id='111')
+        client = self.web_client('admin', 'Admin-pass-123')
+        resp = client.get('/api/conn_log')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual([x.conn_id for x in resp.context['page_obj']], ['2', '1'])
+        self.assertEqual(resp.context['page_obj'][1].alias, 'admin-pc')
+        self.assertEqual(client.get('/api/file_log').status_code, 200)
+
+
+class MiscTests(BaseTestCase):
+    def test_sysinfo_creates_device(self):
+        api_post(Client(), '/api/sysinfo', {'id': '777', 'uuid': 'u', 'cpu': 'Intel Core i7-8700 CPU @ 3.20GHz', 'os': 'Windows 11 Pro'})
+        device = RustDeskDevice.objects.get(rid='777')
+        self.assertEqual(device.os, 'Windows 11 Pro')
+        self.assertEqual(device.username, '-')
+
+    def test_urls_are_anchored(self):
+        client = Client()
+        for path in ('/api/abc', '/api/ab/settings', '/api/login-options', '/api/sysinfo_ver'):
+            self.assertEqual(client.post(path).status_code, 404, path)
+
+    @override_settings(RUSTDESK_KEY='my-key', RUSTDESK_CONFIG='my-config')
+    def test_installers_page_uses_settings(self):
+        client = self.web_client('bob', 'Bob-pass-123')
+        resp = client.get('/api/installers')
+        self.assertContains(resp, 'my-key')
+        self.assertContains(resp, 'my-config')
+        self.assertContains(resp, 'http://testserver/static/configs/install-mac.sh')
+        self.assertNotContains(resp, 'UniqueURL')
+
+    def test_permissions_only_for_admins(self):
+        self.assertTrue(self.admin.has_perm('api.change_rustdeskpeer'))
+        self.assertFalse(self.bob.has_perm('api.change_rustdeskpeer'))
+        admin = self.web_client('admin', 'Admin-pass-123')
+        self.assertEqual(admin.get('/admin/api/rustdeskpeer/?q=111').status_code, 200)
