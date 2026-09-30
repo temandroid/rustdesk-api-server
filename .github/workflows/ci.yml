@@ -12,8 +12,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  # Never cancel runs on master: they may be deploying
-  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+  # Cancel superseded runs only for pull requests: pushes to master and dev deploy
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   SECRET_KEY: ci-only-not-secret
@@ -102,56 +102,23 @@ jobs:
     # Only after all checks passed, only from master
     needs: [lint, test, docker, audit]
     if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    # By default runs on the self-hosted runner installed on the server (label
-    # rustdesk-deploy). Set the repository variable DEPLOY_VIA=ssh to deploy from a
-    # GitHub-hosted runner over SSH instead.
-    runs-on: ${{ vars.DEPLOY_VIA == 'ssh' && 'ubuntu-latest' || fromJSON('["self-hosted", "rustdesk-deploy"]') }}
-    environment: production
-    concurrency:
-      group: deploy-production
-      cancel-in-progress: false
-    env:
-      DEPLOY_VIA: ${{ vars.DEPLOY_VIA || 'runner' }}
-      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '/opt/rustdesk-api' }}
-    steps:
-      - uses: actions/checkout@v5
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: production
+      runner-label: rustdesk-deploy
+      default-path: /opt/rustdesk-api
+    secrets: inherit
 
-      # Self-hosted runner: the job already runs on the server
-      - name: Copy release
-        if: env.DEPLOY_VIA != 'ssh'
-        run: |
-          RELEASE="$DEPLOY_PATH/releases/$GITHUB_SHA"
-          mkdir -p "$RELEASE"
-          rsync -a --delete --exclude-from deploy/rsync-exclude.txt ./ "$RELEASE/"
-      - name: Activate release
-        if: env.DEPLOY_VIA != 'ssh'
-        run: bash "$DEPLOY_PATH/releases/$GITHUB_SHA/deploy/remote-deploy.sh" "$DEPLOY_PATH" "$GITHUB_SHA"
-
-      # GitHub-hosted runner: copy and activate over SSH
-      - name: Configure SSH
-        if: env.DEPLOY_VIA == 'ssh'
-        env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_USER: ${{ secrets.SSH_USER }}
-          SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
-        run: |
-          for name in SSH_HOST SSH_USER SSH_PRIVATE_KEY SSH_KNOWN_HOSTS; do
-            [ -n "${!name}" ] || { echo "::error::Secret $name is not set in the production environment"; exit 1; }
-          done
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
-          chmod 600 ~/.ssh/id_deploy
-          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          printf 'Host deploy-target\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_deploy\n  IdentitiesOnly yes\n  StrictHostKeyChecking yes\n  ConnectTimeout 30\n' \
-            "$SSH_HOST" "$SSH_USER" "$SSH_PORT" > ~/.ssh/config
-      - name: Upload release over SSH
-        if: env.DEPLOY_VIA == 'ssh'
-        run: |
-          RELEASE="$DEPLOY_PATH/releases/$GITHUB_SHA"
-          ssh deploy-target "mkdir -p '$RELEASE'"
-          rsync -az --delete --exclude-from deploy/rsync-exclude.txt ./ "deploy-target:$RELEASE/"
-      - name: Activate release over SSH
-        if: env.DEPLOY_VIA == 'ssh'
-        run: ssh deploy-target "bash '$DEPLOY_PATH/releases/$GITHUB_SHA/deploy/remote-deploy.sh' '$DEPLOY_PATH' '$GITHUB_SHA'"
+  deploy-staging:
+    name: Deploy to staging
+    # Only after all checks passed, only from dev, and only once enabled with the
+    # repository variable STAGING_ENABLED=true (otherwise the job would wait for a
+    # runner that does not exist yet)
+    needs: [lint, test, docker, audit]
+    if: vars.STAGING_ENABLED == 'true' && github.ref == 'refs/heads/dev' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: staging
+      runner-label: rustdesk-staging
+      default-path: /opt/rustdesk-api-staging
+    secrets: inherit

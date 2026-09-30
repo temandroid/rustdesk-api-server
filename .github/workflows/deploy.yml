@@ -1,0 +1,78 @@
+name: Deploy
+
+# Reusable deploy job, called from ci.yml for each environment after all checks pass.
+# By default runs on a self-hosted runner on the server with the given label.
+# Set the repository variable DEPLOY_VIA=ssh to deploy from a GitHub-hosted runner
+# over SSH instead (SSH_* secrets of the environment).
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: GitHub environment with the deploy secrets (production, staging)
+        required: true
+        type: string
+      runner-label:
+        description: Label of the self-hosted runner that deploys this environment
+        required: true
+        type: string
+      default-path:
+        description: Application directory on the server when the DEPLOY_PATH secret is not set
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ${{ vars.DEPLOY_VIA == 'ssh' && 'ubuntu-latest' || fromJSON(format('["self-hosted", "{0}"]', inputs.runner-label)) }}
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: deploy-${{ inputs.environment }}
+      cancel-in-progress: false
+    env:
+      DEPLOY_VIA: ${{ vars.DEPLOY_VIA || 'runner' }}
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || inputs.default-path }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # Self-hosted runner: the job already runs on the server
+      - name: Copy release
+        if: env.DEPLOY_VIA != 'ssh'
+        run: |
+          RELEASE="$DEPLOY_PATH/releases/$GITHUB_SHA"
+          mkdir -p "$RELEASE"
+          rsync -a --delete --exclude-from deploy/rsync-exclude.txt ./ "$RELEASE/"
+      - name: Activate release
+        if: env.DEPLOY_VIA != 'ssh'
+        run: bash "$DEPLOY_PATH/releases/$GITHUB_SHA/deploy/remote-deploy.sh" "$DEPLOY_PATH" "$GITHUB_SHA"
+
+      # GitHub-hosted runner: copy and activate over SSH
+      - name: Configure SSH
+        if: env.DEPLOY_VIA == 'ssh'
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          for name in SSH_HOST SSH_USER SSH_PRIVATE_KEY SSH_KNOWN_HOSTS; do
+            [ -n "${!name}" ] || { echo "::error::Secret $name is not set in the ${{ inputs.environment }} environment"; exit 1; }
+          done
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf 'Host deploy-target\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_deploy\n  IdentitiesOnly yes\n  StrictHostKeyChecking yes\n  ConnectTimeout 30\n' \
+            "$SSH_HOST" "$SSH_USER" "$SSH_PORT" > ~/.ssh/config
+      - name: Upload release over SSH
+        if: env.DEPLOY_VIA == 'ssh'
+        run: |
+          RELEASE="$DEPLOY_PATH/releases/$GITHUB_SHA"
+          ssh deploy-target "mkdir -p '$RELEASE'"
+          rsync -az --delete --exclude-from deploy/rsync-exclude.txt ./ "deploy-target:$RELEASE/"
+      - name: Activate release over SSH
+        if: env.DEPLOY_VIA == 'ssh'
+        run: ssh deploy-target "bash '$DEPLOY_PATH/releases/$GITHUB_SHA/deploy/remote-deploy.sh' '$DEPLOY_PATH' '$GITHUB_SHA'"
