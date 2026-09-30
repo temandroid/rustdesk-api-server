@@ -56,6 +56,10 @@ DEBUG = get_bool('DEBUG')
 ALLOWED_HOSTS = get_list('ALLOWED_HOSTS', '*')
 CSRF_TRUSTED_ORIGINS = get_list('CSRF_TRUSTED_ORIGINS', '')
 SECURE_CROSS_ORIGIN_OPENER_POLICY = 'same-origin'
+# Behind a reverse proxy that terminates HTTPS (e.g. Nginx Proxy Manager):
+# trust its X-Forwarded-Proto header so generated links use https
+if get_bool('BEHIND_PROXY'):
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 # ID server address or domain (usually the same host as the relay server)
 ID_SERVER = get_setting('ID_SERVER', '')

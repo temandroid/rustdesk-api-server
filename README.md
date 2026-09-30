@@ -222,6 +222,37 @@ sudo chmod 440 /etc/sudoers.d/rustdesk-api
 
 Если сервер уже работал из клона git, перенесите базу в `/opt/rustdesk-api/shared/db/db.sqlite3` до первого деплоя.
 
+### Доступ только через Nginx Proxy Manager
+
+По умолчанию (`NETWORK_MODE=host`) контейнер слушает порт 21114 на всех интерфейсах сервера, как `hbbs`/`hbbr`. Чтобы веб-интерфейс и API были доступны только через reverse proxy в Docker, например через Nginx Proxy Manager (NPM), переключите сеть в режим `proxy`:
+
+1. Узнайте Docker-сеть, в которой работает NPM:
+
+```bash
+docker inspect <контейнер NPM> --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}'
+```
+
+2. Добавьте в `<DEPLOY_PATH>/shared/.env`:
+
+```bash
+NETWORK_MODE=proxy
+PROXY_NETWORK=<сеть NPM>        # например npm_default
+BEHIND_PROXY=true               # NPM принимает HTTPS: ссылки в интерфейсе будут с https
+ALLOWED_HOSTS=rustdesk.example.com,127.0.0.1
+CSRF_TRUSTED_ORIGINS=https://rustdesk.example.com
+```
+
+3. Запустите деплой: Actions → CI → Run workflow, ветка `master`. Контейнер переподключится к сети NPM, а на сервере порт 21114 останется открытым только на `127.0.0.1`: к нему обращается проверка после деплоя.
+
+4. В NPM создайте Proxy Host:
+   - **Domain Names:** `rustdesk.example.com`;
+   - **Scheme:** `http`;
+   - **Forward Hostname / IP:** `rustdesk-api` — это имя контейнера (для staging — `rustdesk-api-staging`);
+   - **Forward Port:** `21114` (для staging — `21115`);
+   - на вкладке SSL выпустите сертификат и включите Force SSL.
+
+5. В клиентах RustDesk укажите **API server** `https://rustdesk.example.com`. Если поле пустое, клиент обращается напрямую к `http://<ID server>:21114`, а в режиме `proxy` этот порт закрыт.
+
 ### Self-hosted runner (вариант по умолчанию)
 
 1. В GitHub откройте **Settings → Actions → Runners → New self-hosted runner**, выберите Linux и свою архитектуру. GitHub покажет команды с одноразовым токеном.

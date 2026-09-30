@@ -1,0 +1,28 @@
+# RustDesk API server behind a reverse proxy container (e.g. Nginx Proxy Manager).
+# Used instead of docker-compose.yml when NETWORK_MODE=proxy in shared/.env.
+# The container joins the proxy's Docker network PROXY_NETWORK and is reachable
+# there as <INSTANCE_NAME>:<APP_PORT>. On the host the port is published on
+# 127.0.0.1 only (for the health check after deploy), not on external interfaces.
+name: ${INSTANCE_NAME:-rustdesk-api}
+
+services:
+  api:
+    container_name: ${INSTANCE_NAME:-rustdesk-api}
+    image: ${INSTANCE_NAME:-rustdesk-api}:${IMAGE_TAG:?IMAGE_TAG is not set}
+    command: ["gunicorn", "rustdesk_server_api.wsgi:application", "--bind", "0.0.0.0:${APP_PORT:-21114}", "--workers", "2", "--access-logfile", "-"]
+    env_file: ${APP_DIR:?APP_DIR is not set}/shared/.env
+    environment:
+      DB_PATH: /app/db/db.sqlite3
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    volumes:
+      - ${APP_DIR}/shared/db:/app/db
+    ports:
+      - "127.0.0.1:${APP_PORT:-21114}:${APP_PORT:-21114}"
+    networks:
+      - proxy
+    restart: unless-stopped
+
+networks:
+  proxy:
+    name: ${PROXY_NETWORK:?PROXY_NETWORK is not set}
+    external: true
