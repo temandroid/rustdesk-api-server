@@ -30,3 +30,6 @@ rustdesk_server_api/secret_config.py
 # Local database and collectstatic output
 db/*.sqlite3
 static_root/
+
+# Local virtualenv
+venv/

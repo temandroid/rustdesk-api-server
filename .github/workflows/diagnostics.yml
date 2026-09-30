@@ -1,0 +1,44 @@
+name: Diagnostics
+
+# Manual read-only checks of a deployed instance on the self-hosted runner:
+# container state and network, log tail, response codes, HTTP checks directly,
+# from the reverse proxy container and from outside. Changes nothing.
+# Values of secret variables from shared/.env are not printed.
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Instance to check
+        type: choice
+        options: [production, staging]
+        default: production
+      lines:
+        description: Number of log lines
+        type: number
+        default: 50
+      proxy-container:
+        description: Reverse proxy container (Nginx Proxy Manager), empty to skip
+        type: string
+        default: nginx-proxy-manager-app-1
+      public-url:
+        description: Public address, e.g. https://rustdesk.example.com, empty to skip
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostics:
+    name: Diagnostics (${{ inputs.target }})
+    runs-on: [self-hosted, "${{ inputs.target == 'staging' && 'rustdesk-staging' || 'rustdesk-deploy' }}"]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check
+        env:
+          APP_DIR: ${{ inputs.target == 'staging' && '/opt/rustdesk-api-staging' || '/opt/rustdesk-api' }}
+          LINES: ${{ inputs.lines }}
+          PROXY_CONTAINER: ${{ inputs.proxy-container }}
+          PUBLIC_URL: ${{ inputs.public-url }}
+        run: bash deploy/diagnostics.sh "$APP_DIR" "$LINES" "$PROXY_CONTAINER" "$PUBLIC_URL"

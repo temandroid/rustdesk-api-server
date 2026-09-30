@@ -63,10 +63,17 @@ if get_bool('BEHIND_PROXY'):
 
 # ID server address or domain (usually the same host as the relay server)
 ID_SERVER = get_setting('ID_SERVER', '')
-# Public key of the ID server, shown on the installers page
+# Relay server address; empty means the client derives it from ID_SERVER
+RELAY_SERVER = get_setting('RELAY_SERVER', '')
+# Public key of the ID server (data/id_ed25519.pub of hbbs)
 RUSTDESK_KEY = get_setting('RUSTDESK_KEY', '')
-# Server configuration string exported from the RustDesk client, shown on the installers page
+# Public address of this API server for clients; empty means the address of the request
+API_URL = get_setting('API_URL', '')
+# Server configuration string for the installers. Empty means it is generated
+# from ID_SERVER, RELAY_SERVER, RUSTDESK_KEY and API_URL.
 RUSTDESK_CONFIG = get_setting('RUSTDESK_CONFIG', '')
+# RustDesk client version downloaded by the installer scripts
+RUSTDESK_VERSION = get_setting('RUSTDESK_VERSION', '1.3.9')
 
 DEFAULT_AUTO_FIELD = 'django.db.models.AutoField'
 AUTH_USER_MODEL = 'api.UserProfile'

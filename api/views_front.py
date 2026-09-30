@@ -1,6 +1,7 @@
 import datetime
 import json
 import os
+import re
 import secrets
 
 from django.conf import settings
@@ -9,12 +10,13 @@ from django.contrib.auth.decorators import login_required, user_passes_test
 from django.core.paginator import Paginator
 from django.db.models import F, Q
 from django.forms.models import model_to_dict
-from django.http import Http404, HttpResponseNotAllowed, JsonResponse
+from django.http import Http404, HttpResponse, HttpResponseNotAllowed, JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
 
 from api.models import RustDeskPeer, RustDeskDevice, UserProfile, ShareLink, ConnLog, FileLog
 from .forms import AddPeerForm, EditPeerForm, AssignPeerForm
+from .util import api_url, server_config
 
 # Lifetime of a client access token without heartbeats
 EFFECTIVE_SECONDS = 7200
@@ -220,19 +222,60 @@ def share_accept(request, shash):
     return render(request, 'msg.html', {'title':'Success', 'msg':msg})
 
 
+# Installer scripts from static/configs served with the server settings filled in:
+# the lines setting the RustDesk version and the server configuration string
+INSTALLER_SCRIPTS = {
+    'install.bat': ('set version={}', 'set rustdesk_cfg="{}"'),
+    'install.ps1': ('$version = "{}"', '$rustdesk_cfg="{}"'),
+    'install-linux.sh': ('VERSION="{}"', 'rustdesk_cfg="{}"'),
+    'install-mac.sh': ('VERSION="{}"', 'rustdesk_cfg="{}"'),
+}
+
+
+def fill_line(lines, template, value):
+    prefix = template.split('{}')[0].rstrip('"')
+    for i, line in enumerate(lines):
+        if line.startswith(prefix):
+            ending = line[len(line.rstrip('\r\n')):]
+            lines[i] = template.format(value) + ending
+            return
+
+
 @login_required
 def installers(request):
     configs_dir = os.path.join(settings.BASE_DIR, 'static', 'configs')
-    exe_name = f'rustdesk-licensed-{settings.RUSTDESK_CONFIG}.exe' if settings.RUSTDESK_CONFIG else ''
+    config = server_config(request)
+    exe_name = f'rustdesk-licensed-{config}.exe' if config else ''
     if exe_name and not os.path.exists(os.path.join(configs_dir, exe_name)):
         exe_name = ''
     return render(request, 'installers.html', {
-        'api_url': request.build_absolute_uri('/').rstrip('/'),
+        'api_url': api_url(request),
         'rustdesk_key': settings.RUSTDESK_KEY,
-        'rustdesk_config': settings.RUSTDESK_CONFIG,
+        'rustdesk_config': config,
+        'rustdesk_version': settings.RUSTDESK_VERSION,
         'exe_name': exe_name,
         'has_qrcode': os.path.exists(os.path.join(configs_dir, 'qrcode.png')),
     })
+
+
+def installer_script(request, name):
+    # No login: the link is used on the machine being installed (curl ... | bash).
+    # The script contains only what every client gets anyway: server
+    # addresses and the public key.
+    if name not in INSTALLER_SCRIPTS:
+        raise Http404
+    version_line, config_line = INSTALLER_SCRIPTS[name]
+    with open(os.path.join(settings.BASE_DIR, 'static', 'configs', name), newline='') as f:
+        lines = f.read().splitlines(keepends=True)
+    # Values are put into shell/batch code: only plain version numbers and base64
+    if re.fullmatch(r'[0-9.]+', settings.RUSTDESK_VERSION):
+        fill_line(lines, version_line, settings.RUSTDESK_VERSION)
+    config = server_config(request)
+    if re.fullmatch(r'[A-Za-z0-9+/=_-]+', config):
+        fill_line(lines, config_line, config)
+    response = HttpResponse(''.join(lines), content_type='text/plain; charset=utf-8')
+    response['Content-Disposition'] = f'attachment; filename="{name}"'
+    return response
 
 
 def format_duration(start, end):
