@@ -21,6 +21,7 @@ urlpatterns = [
     path('share', views_front.share, name='share'),
     path('share/<str:shash>', views_front.share_accept, name='share_accept'),
     path('installers', views_front.installers, name='installers'),
+    path('installers/<str:name>', views_front.installer_script, name='installer_script'),
     path('conn_log', views_front.conn_log, name='conn_log'),
     path('file_log', views_front.file_log, name='file_log'),
     path('add_peer', views_front.add_peer, name='add_peer'),

@@ -1,3 +1,4 @@
+import base64
 import datetime
 import json
 
@@ -338,8 +339,51 @@ class MiscTests(BaseTestCase):
         resp = client.get('/api/installers')
         self.assertContains(resp, 'my-key')
         self.assertContains(resp, 'my-config')
-        self.assertContains(resp, 'http://testserver/static/configs/install-mac.sh')
+        self.assertContains(resp, 'http://testserver/api/installers/install-mac.sh')
         self.assertNotContains(resp, 'UniqueURL')
+
+    @override_settings(ID_SERVER='id.example.com', RELAY_SERVER='', RUSTDESK_KEY='KEY+/=',
+                       RUSTDESK_CONFIG='', API_URL='https://api.example.com/')
+    def test_config_is_generated_from_settings(self):
+        client = self.web_client('bob', 'Bob-pass-123')
+        config = client.get('/api/installers').context['rustdesk_config']
+        decoded = json.loads(base64.b64decode(config[::-1]))
+        self.assertEqual(decoded, {'host': 'id.example.com', 'relay': '', 'api': 'https://api.example.com', 'key': 'KEY+/='})
+
+    @override_settings(ID_SERVER='', RUSTDESK_CONFIG='')
+    def test_no_config_without_id_server(self):
+        client = self.web_client('bob', 'Bob-pass-123')
+        self.assertEqual(client.get('/api/installers').context['rustdesk_config'], '')
+
+    @override_settings(RUSTDESK_CONFIG='abc123==', RUSTDESK_VERSION='1.4.2')
+    def test_installer_scripts_are_filled_in(self):
+        client = Client()
+        expected = {
+            'install.bat': ('set version=1.4.2', 'set rustdesk_cfg="abc123=="'),
+            'install.ps1': ('$version = "1.4.2"', '$rustdesk_cfg="abc123=="'),
+            'install-linux.sh': ('VERSION="1.4.2"', 'rustdesk_cfg="abc123=="'),
+            'install-mac.sh': ('VERSION="1.4.2"', 'rustdesk_cfg="abc123=="'),
+        }
+        for name, lines in expected.items():
+            resp = client.get(f'/api/installers/{name}')
+            self.assertEqual(resp.status_code, 200, name)
+            self.assertIn(f'filename="{name}"', resp['Content-Disposition'])
+            body = resp.content.decode()
+            for line in lines:
+                self.assertIn(line, body.splitlines(), name)
+            self.assertNotIn('secure-string', body, name)
+            self.assertNotIn('1.3.9', body, name)
+
+    @override_settings(RUSTDESK_CONFIG='x"; rm -rf /', RUSTDESK_VERSION='1; reboot')
+    def test_installer_scripts_reject_unsafe_values(self):
+        body = Client().get('/api/installers/install-linux.sh').content.decode()
+        self.assertIn('rustdesk_cfg="secure-string"', body)
+        self.assertNotIn('rm -rf', body)
+        self.assertNotIn('reboot', body)
+
+    def test_unknown_installer_script_is_not_found(self):
+        for name in ('secret_config.py', '..%2Fsettings.py', 'qrcode.png'):
+            self.assertEqual(Client().get(f'/api/installers/{name}').status_code, 404, name)
 
     def test_permissions_only_for_admins(self):
         self.assertTrue(self.admin.has_perm('api.change_rustdeskpeer'))

@@ -6,7 +6,7 @@
   <div class="layui-row layui-col-space15">
     <div class="layui-col-md15">
       <div class="layui-card">
-        <div class="layui-card-header">Installer Files for {{u.username}}</div>
+        <div class="layui-card-header">Installer Files for {{u.username}} (RustDesk {{ rustdesk_version }}{% if not rustdesk_config %}, server settings are not filled in: set ID_SERVER and RUSTDESK_KEY on the server{% endif %})</div>
         <div class="layui-card-body">
           <table class="layui-table">
             <thead>
@@ -21,10 +21,10 @@
             <tbody>
               <tr>
                 <td>{% if exe_name %}<a href="{% static 'configs/'|add:exe_name %}">Download</a><br><br><button onclick="copyToClipboard(this)" data-content="{{ api_url }}{% static 'configs/'|add:exe_name %}">Copy Link</button>{% else %}Not available{% endif %}</td>
-                <td> <a href="{% static 'configs/install.bat' %}">Download bat</a><br><br><button onclick="copyToClipboard(this)" data-content="{{ api_url }}{% static 'configs/install.bat' %}">Copy Link</button><br>
-                <br><a href="{% static 'configs/install.ps1' %}">Download Powershell</a><br><br><button onclick="copyToClipboard(this)" data-content="{{ api_url }}{% static 'configs/install.ps1' %}">Copy Link</button></td>
-                <td> <a href="{% static 'configs/install-linux.sh' %}">Download</a><br><br><button onclick="copyToClipboard(this)" data-content="{{ api_url }}{% static 'configs/install-linux.sh' %}">Copy Link</button></td>
-                <td> <a href="{% static 'configs/install-mac.sh' %}">Download</a><br><br><button onclick="copyToClipboard(this)" data-content="{{ api_url }}{% static 'configs/install-mac.sh' %}">Copy Link</button></td>
+                <td>{% with name="install.bat" %}{% url 'installer_script' name as link %}<a href="{{ link }}">Download bat</a><br><br><button onclick="copyToClipboard(this)" data-content="{{ api_url }}{{ link }}">Copy Link</button>{% endwith %}<br>
+                <br>{% with name="install.ps1" %}{% url 'installer_script' name as link %}<a href="{{ link }}">Download Powershell</a><br><br><button onclick="copyToClipboard(this)" data-content="{{ api_url }}{{ link }}">Copy Link</button>{% endwith %}</td>
+                <td>{% with name="install-linux.sh" %}{% url 'installer_script' name as link %}<a href="{{ link }}">Download</a><br><br><button onclick="copyToClipboard(this)" data-content="{{ api_url }}{{ link }}">Copy Link</button>{% endwith %}</td>
+                <td>{% with name="install-mac.sh" %}{% url 'installer_script' name as link %}<a href="{{ link }}">Download</a><br><br><button onclick="copyToClipboard(this)" data-content="{{ api_url }}{{ link }}">Copy Link</button>{% endwith %}</td>
                 <td>{% if has_qrcode %}<img src="{% static 'configs/qrcode.png' %}">{% else %}Not available{% endif %}</td>
               </tr>
             </tbody>
@@ -43,7 +43,7 @@
             </thead>
             <tbody>
               <tr>
-                <td>{% if rustdesk_config %} {{ rustdesk_config }} <button onclick="copyToClipboard(this)" data-content="{{ rustdesk_config }}">Copy</button>{% else %}Set RUSTDESK_CONFIG on the server{% endif %}</td>
+                <td>{% if rustdesk_config %} {{ rustdesk_config }} <button onclick="copyToClipboard(this)" data-content="{{ rustdesk_config }}">Copy</button>{% else %}Set ID_SERVER and RUSTDESK_KEY on the server{% endif %}</td>
               </tr>
             </tbody>
           </table>

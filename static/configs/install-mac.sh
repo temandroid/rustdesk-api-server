@@ -18,7 +18,7 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # Specify the path to the rustdesk.dmg file
-dmg_file="/tmp/rustdesk-1.3.7.dmg"
+dmg_file="/tmp/rustdesk-${VERSION}.dmg"
 
 # Specify the mount point for the DMG (temporary directory)
 mount_point="/Volumes/RustDesk"
