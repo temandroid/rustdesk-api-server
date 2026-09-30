@@ -32,6 +32,10 @@ INSTANCE_NAME=$(env_value INSTANCE_NAME)
 INSTANCE_NAME=${INSTANCE_NAME:-rustdesk-api}
 APP_PORT=$(env_value APP_PORT)
 APP_PORT=${APP_PORT:-21114}
+# Host network mode only: address to listen on, e.g. 127.0.0.1 so that only a
+# reverse proxy on the same host (Nginx Proxy Manager with network_mode: host) can connect
+BIND_ADDRESS=$(env_value BIND_ADDRESS)
+BIND_ADDRESS=${BIND_ADDRESS:-0.0.0.0}
 HEALTHCHECK_URL=$(env_value HEALTHCHECK_URL)
 HEALTHCHECK_URL=${HEALTHCHECK_URL:-http://127.0.0.1:$APP_PORT/api/user_action}
 IMAGE="$INSTANCE_NAME:$RELEASE_ID"
@@ -58,7 +62,7 @@ esac
 # Used by docker-compose.yml; the container runs as the deploy user
 APP_UID=$(id -u)
 APP_GID=$(id -g)
-export APP_DIR APP_UID APP_GID INSTANCE_NAME APP_PORT
+export APP_DIR APP_UID APP_GID INSTANCE_NAME APP_PORT BIND_ADDRESS
 
 compose() { IMAGE_TAG="$1" docker compose -f "$COMPOSE_FILE" "${@:2}"; }
 

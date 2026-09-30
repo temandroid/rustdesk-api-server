@@ -7,13 +7,14 @@ services:
   api:
     container_name: ${INSTANCE_NAME:-rustdesk-api}
     image: ${INSTANCE_NAME:-rustdesk-api}:${IMAGE_TAG:?IMAGE_TAG is not set}
-    command: ["gunicorn", "rustdesk_server_api.wsgi:application", "--bind", "0.0.0.0:${APP_PORT:-21114}", "--workers", "2", "--access-logfile", "-"]
+    command: ["gunicorn", "rustdesk_server_api.wsgi:application", "--bind", "${BIND_ADDRESS:-0.0.0.0}:${APP_PORT:-21114}", "--workers", "2", "--access-logfile", "-"]
     env_file: ${APP_DIR:?APP_DIR is not set}/shared/.env
     environment:
       DB_PATH: /app/db/db.sqlite3
     user: "${APP_UID:-1000}:${APP_GID:-1000}"
     volumes:
       - ${APP_DIR}/shared/db:/app/db
-    # Same as hbbs/hbbr: listens on APP_PORT (21114 by default) of the host
+    # Same as hbbs/hbbr: listens on APP_PORT (21114 by default) of the host,
+    # on all interfaces or only on BIND_ADDRESS (e.g. 127.0.0.1 for a local proxy)
     network_mode: host
     restart: unless-stopped
