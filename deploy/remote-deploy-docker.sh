@@ -16,7 +16,6 @@ RELEASE="$APP_DIR/releases/$RELEASE_ID"
 ENV_FILE="$APP_DIR/shared/.env"
 DB_DIR="$APP_DIR/shared/db"
 BACKUPS="$APP_DIR/backups"
-COMPOSE_FILE="$RELEASE/deploy/docker-compose.yml"
 KEEP_RELEASES=${KEEP_RELEASES:-5}
 KEEP_BACKUPS=${KEEP_BACKUPS:-10}
 
@@ -33,14 +32,37 @@ INSTANCE_NAME=$(env_value INSTANCE_NAME)
 INSTANCE_NAME=${INSTANCE_NAME:-rustdesk-api}
 APP_PORT=$(env_value APP_PORT)
 APP_PORT=${APP_PORT:-21114}
+# Host network mode only: address to listen on, e.g. 127.0.0.1 so that only a
+# reverse proxy on the same host (Nginx Proxy Manager with network_mode: host) can connect
+BIND_ADDRESS=$(env_value BIND_ADDRESS)
+BIND_ADDRESS=${BIND_ADDRESS:-0.0.0.0}
 HEALTHCHECK_URL=$(env_value HEALTHCHECK_URL)
 HEALTHCHECK_URL=${HEALTHCHECK_URL:-http://127.0.0.1:$APP_PORT/api/user_action}
 IMAGE="$INSTANCE_NAME:$RELEASE_ID"
 
+# host (default): the container uses the host network, like hbbs/hbbr.
+# proxy: the container joins the Docker network of a reverse proxy container
+# (PROXY_NETWORK) and its port is published on 127.0.0.1 only.
+NETWORK_MODE=$(env_value NETWORK_MODE)
+NETWORK_MODE=${NETWORK_MODE:-host}
+case "$NETWORK_MODE" in
+    host)
+        COMPOSE_FILE="$RELEASE/deploy/docker-compose.yml" ;;
+    proxy)
+        COMPOSE_FILE="$RELEASE/deploy/docker-compose.proxy.yml"
+        PROXY_NETWORK=$(env_value PROXY_NETWORK)
+        [ -n "$PROXY_NETWORK" ] || { log "NETWORK_MODE=proxy needs PROXY_NETWORK in $ENV_FILE"; exit 1; }
+        docker network inspect "$PROXY_NETWORK" >/dev/null 2>&1 \
+            || { log "Docker network $PROXY_NETWORK not found (docker network ls)"; exit 1; }
+        export PROXY_NETWORK ;;
+    *)
+        log "unknown NETWORK_MODE '$NETWORK_MODE', use host or proxy"; exit 1 ;;
+esac
+
 # Used by docker-compose.yml; the container runs as the deploy user
 APP_UID=$(id -u)
 APP_GID=$(id -g)
-export APP_DIR APP_UID APP_GID INSTANCE_NAME APP_PORT
+export APP_DIR APP_UID APP_GID INSTANCE_NAME APP_PORT BIND_ADDRESS
 
 compose() { IMAGE_TAG="$1" docker compose -f "$COMPOSE_FILE" "${@:2}"; }
 

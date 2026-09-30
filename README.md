@@ -222,6 +222,43 @@ sudo chmod 440 /etc/sudoers.d/rustdesk-api
 
 Если сервер уже работал из клона git, перенесите базу в `/opt/rustdesk-api/shared/db/db.sqlite3` до первого деплоя.
 
+### Доступ только через Nginx Proxy Manager
+
+По умолчанию контейнер слушает порт 21114 на всех интерфейсах сервера, как `hbbs`/`hbbr`. Чтобы веб-интерфейс и API были доступны только через reverse proxy на том же сервере, например через Nginx Proxy Manager (NPM), выберите вариант по тому, как запущен NPM. Посмотреть можно так:
+
+```bash
+docker inspect <контейнер NPM> --format '{{.HostConfig.NetworkMode}}'
+```
+
+**NPM в сети `host`** — команда выводит `host`. Сервер продолжает работать в сети хоста, но слушает только `127.0.0.1`. Добавьте в `<DEPLOY_PATH>/shared/.env`:
+
+```bash
+BIND_ADDRESS=127.0.0.1
+BEHIND_PROXY=true               # NPM принимает HTTPS: ссылки в интерфейсе будут с https
+ALLOWED_HOSTS=rustdesk.example.com,127.0.0.1
+CSRF_TRUSTED_ORIGINS=https://rustdesk.example.com
+```
+
+В NPM в поле **Forward Hostname / IP** укажите `127.0.0.1`.
+
+**NPM в своей Docker-сети** — команда выводит имя сети, например `npm_default`. Контейнер подключается к этой сети, а на сервере порт открыт только на `127.0.0.1`. Добавьте в `.env`:
+
+```bash
+NETWORK_MODE=proxy
+PROXY_NETWORK=npm_default       # сеть NPM из команды выше
+BEHIND_PROXY=true
+ALLOWED_HOSTS=rustdesk.example.com,127.0.0.1
+CSRF_TRUSTED_ORIGINS=https://rustdesk.example.com
+```
+
+В NPM в поле **Forward Hostname / IP** укажите `rustdesk-api` — это имя контейнера (для staging — `rustdesk-api-staging`).
+
+Дальше для обоих вариантов:
+
+1. Запустите деплой: Actions → CI → Run workflow, ветка `master`. Контейнер пересоздастся с новыми настройками.
+2. В NPM создайте Proxy Host: домен `rustdesk.example.com`, Scheme `http`, Forward Hostname/IP — как указано выше, Forward Port `21114` (для staging — `21115`). На вкладке SSL выпустите сертификат и включите Force SSL.
+3. В клиентах RustDesk укажите **API server** `https://rustdesk.example.com`. Если поле пустое, клиент обращается напрямую к `http://<ID server>:21114`, а этот порт снаружи будет закрыт.
+
 ### Self-hosted runner (вариант по умолчанию)
 
 1. В GitHub откройте **Settings → Actions → Runners → New self-hosted runner**, выберите Linux и свою архитектуру. GitHub покажет команды с одноразовым токеном.
