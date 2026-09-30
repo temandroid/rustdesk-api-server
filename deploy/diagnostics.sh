@@ -104,7 +104,18 @@ fi
 end
 
 if [ -n "$PROXY_CONTAINER" ] && docker inspect "$PROXY_CONTAINER" >/dev/null 2>&1; then
-    section "Proxy $PROXY_CONTAINER: errors in the last 200 log lines"
-    docker logs --tail 200 "$PROXY_CONTAINER" 2>&1 | grep -iE 'error|upstream|502|504' | tail -n 20 || echo "none"
+    # Container log of Nginx Proxy Manager: its own errors (✖ error) and nginx
+    # messages; its debug lines like `nginx -t -g "error_log off;"` are skipped
+    section "Proxy $PROXY_CONTAINER: errors in the last 200 container log lines"
+    docker logs --tail 200 "$PROXY_CONTAINER" 2>&1 \
+        | grep -E '✖|\[(error|crit|alert|emerg)\]' | grep -v 'error_log off' | tail -n 20 \
+        | grep . || echo "none"
+    end
+
+    # nginx error logs of the proxy hosts (Nginx Proxy Manager keeps them in
+    # /data/logs): only upstream errors for this instance's port
+    section "Proxy $PROXY_CONTAINER: nginx errors for port $PORT"
+    docker exec "$PROXY_CONTAINER" sh -c 'tail -q -n 500 /data/logs/proxy-host-*_error.log 2>/dev/null' 2>&1 \
+        | grep -F ":$PORT" | tail -n 20 | grep . || echo "none"
     end
 fi
