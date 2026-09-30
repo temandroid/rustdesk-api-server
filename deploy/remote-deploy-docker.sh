@@ -25,20 +25,29 @@ log() { echo "[deploy] $*"; }
 [ -d "$RELEASE" ] || { log "release $RELEASE not found"; exit 1; }
 [ -f "$ENV_FILE" ] || { log "$ENV_FILE not found, see README"; exit 1; }
 
-HEALTHCHECK_URL=$(sed -n 's/^HEALTHCHECK_URL=//p' "$ENV_FILE" | tail -n 1)
-HEALTHCHECK_URL=${HEALTHCHECK_URL:-http://127.0.0.1:21114/api/user_action}
+env_value() { sed -n "s/^$1=//p" "$ENV_FILE" | tail -n 1 | tr -d '"'"'"' \r'; }
+
+# Several instances (e.g. production and staging) can run on one server:
+# each has its own container, image, port, directory and database
+INSTANCE_NAME=$(env_value INSTANCE_NAME)
+INSTANCE_NAME=${INSTANCE_NAME:-rustdesk-api}
+APP_PORT=$(env_value APP_PORT)
+APP_PORT=${APP_PORT:-21114}
+HEALTHCHECK_URL=$(env_value HEALTHCHECK_URL)
+HEALTHCHECK_URL=${HEALTHCHECK_URL:-http://127.0.0.1:$APP_PORT/api/user_action}
+IMAGE="$INSTANCE_NAME:$RELEASE_ID"
 
 # Used by docker-compose.yml; the container runs as the deploy user
 APP_UID=$(id -u)
 APP_GID=$(id -g)
-export APP_DIR APP_UID APP_GID
+export APP_DIR APP_UID APP_GID INSTANCE_NAME APP_PORT
 
 compose() { IMAGE_TAG="$1" docker compose -f "$COMPOSE_FILE" "${@:2}"; }
 
 PREVIOUS=$(cat "$APP_DIR/current_release" 2>/dev/null || true)
 
-log "building image rustdesk-api:$RELEASE_ID"
-docker build --quiet --tag "rustdesk-api:$RELEASE_ID" "$RELEASE"
+log "building image $IMAGE"
+docker build --quiet --tag "$IMAGE" "$RELEASE"
 
 mkdir -p "$DB_DIR" "$BACKUPS"
 compose "$RELEASE_ID" run --rm --no-deps api python manage.py check
@@ -49,7 +58,7 @@ if [ -f "$DB_DIR/db.sqlite3" ]; then
     log "backing up database to $BACKUP"
     # SQLite online backup: consistent while the running server writes to the database
     docker run --rm --user "$APP_UID:$APP_GID" \
-        -v "$DB_DIR:/db" -v "$BACKUPS:/backups" "rustdesk-api:$RELEASE_ID" \
+        -v "$DB_DIR:/db" -v "$BACKUPS:/backups" "$IMAGE" \
         python -c "import sqlite3, sys; sqlite3.connect('/db/db.sqlite3').backup(sqlite3.connect(sys.argv[1]))" \
         "/backups/$(basename "$BACKUP")"
 fi
@@ -88,7 +97,7 @@ done
 trap - ERR
 if [ -z "$healthy" ]; then
     log "health check failed, container logs:"
-    docker logs --tail 50 rustdesk-api || true
+    docker logs --tail 50 "$INSTANCE_NAME" || true
     rollback
     exit 1
 fi
@@ -98,7 +107,7 @@ log "removing old releases, images and backups"
 # shellcheck disable=SC2010,SC2012
 { ls -1t "$APP_DIR/releases" | grep -vx "$RELEASE_ID" || true; } | tail -n +"$KEEP_RELEASES" | while read -r old; do
     rm -rf "${APP_DIR:?}/releases/$old"
-    docker image rm "rustdesk-api:$old" >/dev/null 2>&1 || true
+    docker image rm "$INSTANCE_NAME:$old" >/dev/null 2>&1 || true
 done
 # shellcheck disable=SC2012
 { ls -1t "$BACKUPS"/db-*.sqlite3 2>/dev/null || true; } | tail -n +"$((KEEP_BACKUPS + 1))" | xargs -r rm -f --

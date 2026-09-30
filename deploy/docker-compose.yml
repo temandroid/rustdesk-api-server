@@ -1,17 +1,19 @@
-# RustDesk API server. Started by deploy/remote-deploy.sh, which sets APP_DIR,
-# IMAGE_TAG, APP_UID and APP_GID. Settings come from ${APP_DIR}/shared/.env.
-name: rustdesk-api
+# RustDesk API server. Started by deploy/remote-deploy-docker.sh, which sets
+# APP_DIR, INSTANCE_NAME, APP_PORT, IMAGE_TAG, APP_UID and APP_GID.
+# Settings come from ${APP_DIR}/shared/.env.
+name: ${INSTANCE_NAME:-rustdesk-api}
 
 services:
   api:
-    container_name: rustdesk-api
-    image: rustdesk-api:${IMAGE_TAG:?IMAGE_TAG is not set}
+    container_name: ${INSTANCE_NAME:-rustdesk-api}
+    image: ${INSTANCE_NAME:-rustdesk-api}:${IMAGE_TAG:?IMAGE_TAG is not set}
+    command: ["gunicorn", "rustdesk_server_api.wsgi:application", "--bind", "0.0.0.0:${APP_PORT:-21114}", "--workers", "2", "--access-logfile", "-"]
     env_file: ${APP_DIR:?APP_DIR is not set}/shared/.env
     environment:
       DB_PATH: /app/db/db.sqlite3
     user: "${APP_UID:-1000}:${APP_GID:-1000}"
     volumes:
       - ${APP_DIR}/shared/db:/app/db
-    # Same as hbbs/hbbr: listens on port 21114 of the host
+    # Same as hbbs/hbbr: listens on APP_PORT (21114 by default) of the host
     network_mode: host
     restart: unless-stopped

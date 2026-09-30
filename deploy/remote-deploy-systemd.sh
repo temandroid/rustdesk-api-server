@@ -29,7 +29,7 @@ set -a
 . "$ENV_FILE"
 set +a
 SERVICE_NAME=${SERVICE_NAME:-rustdesk-api}
-HEALTHCHECK_URL=${HEALTHCHECK_URL:-http://127.0.0.1:21114/api/user_action}
+HEALTHCHECK_URL=${HEALTHCHECK_URL:-http://127.0.0.1:${APP_PORT:-21114}/api/user_action}
 DB_PATH=${DB_PATH:-$APP_DIR/shared/db/db.sqlite3}
 export DB_PATH
 

@@ -154,7 +154,14 @@ GitHub Actions (`.github/workflows/ci.yml`) запускается на кажд
 
 ## Деплой на сервер
 
-После каждого push в `master` (то есть после слияния PR) и успешного прохождения всех проверок CI job **Deploy to production** выкатывает код на сервер. Запустить деплой вручную можно в Actions → CI → Run workflow (ветка `master`).
+После каждого push в `master` (то есть после слияния PR) и успешного прохождения всех проверок CI job **Deploy to production** выкатывает код на сервер. Push в `dev` так же выкатывается на **staging**, если он включён (см. [Staging](#staging-деплой-из-dev)). Запустить деплой вручную можно в Actions → CI → Run workflow, выбрав ветку `master` или `dev`.
+
+| Ветка | Окружение GitHub | Метка runner'а | Каталог по умолчанию |
+|-------|------------------|----------------|----------------------|
+| `master` | `production` | `rustdesk-deploy` | `/opt/rustdesk-api` |
+| `dev` | `staging` | `rustdesk-staging` | `/opt/rustdesk-api-staging` |
+
+Сам деплой описан в `.github/workflows/deploy.yml`, его вызывает `ci.yml` для каждого окружения.
 
 Как job попадает на сервер, задаёт переменная репозитория `DEPLOY_VIA` (Settings → Secrets and variables → Actions → Variables):
 
@@ -284,7 +291,7 @@ Docker:
 ```bash
 cd /opt/rustdesk-api
 ls releases                       # доступные релизы
-APP_DIR=/opt/rustdesk-api APP_UID=$(id -u) APP_GID=$(id -g) IMAGE_TAG=<commit> \
+APP_DIR=/opt/rustdesk-api INSTANCE_NAME=rustdesk-api APP_UID=$(id -u) APP_GID=$(id -g) IMAGE_TAG=<commit> \
   docker compose -f releases/<commit>/deploy/docker-compose.yml up -d
 echo <commit> > current_release
 ```
@@ -297,6 +304,43 @@ sudo systemctl restart rustdesk-api
 ```
 
 Резервные копии базы — в `/opt/rustdesk-api/backups`.
+
+Для staging то же самое, но с каталогом `/opt/rustdesk-api-staging` и `INSTANCE_NAME=rustdesk-api-staging`.
+
+### Staging: деплой из `dev`
+
+Staging — отдельный экземпляр сервера для проверки изменений до слияния в `master`. У него своя база, свой порт и свои настройки. Настоящие клиенты RustDesk к нему не подключаются.
+
+Staging можно поднять на том же сервере, что и прод, или на отдельном. Для одного сервера:
+
+1. Создайте каталог и настройки:
+
+```bash
+sudo mkdir -p /opt/rustdesk-api-staging/shared/db
+sudo chown -R deploy:deploy /opt/rustdesk-api-staging
+# скопируйте deploy/env.example в /opt/rustdesk-api-staging/shared/.env и заполните
+sudo -u deploy nano /opt/rustdesk-api-staging/shared/.env
+sudo chmod 600 /opt/rustdesk-api-staging/shared/.env
+```
+
+В `.env` для staging обязательно:
+
+```bash
+SECRET_KEY=<другой, не как на проде>
+INSTANCE_NAME=rustdesk-api-staging   # имя контейнера, образа и compose-проекта
+APP_PORT=21115                       # порт, отличный от прода (21114)
+ALLOWED_HOSTS=<адрес сервера>,127.0.0.1
+```
+
+Для `DEPLOY_METHOD=systemd` вместо `INSTANCE_NAME` нужен отдельный сервис: скопируйте `deploy/rustdesk-api.service` в `rustdesk-api-staging.service`, поменяйте в нём пути на `/opt/rustdesk-api-staging` и порт на 21115, а в `.env` укажите `SERVICE_NAME=rustdesk-api-staging` и `APP_PORT=21115`. Правило sudoers тоже нужно добавить для нового сервиса.
+
+2. Добавьте runner'у метку `rustdesk-staging` в Settings → Actions → Runners. Один runner может обслуживать оба окружения: деплои выполняются по очереди. Если staging на отдельном сервере, установите туда свой runner с этой меткой.
+
+3. В **Settings → Environments** создайте окружение `staging`. В **Deployment branches and tags** разрешите только `dev`. Если каталог не `/opt/rustdesk-api-staging`, добавьте секрет `DEPLOY_PATH`.
+
+4. Включите staging: в **Settings → Secrets and variables → Actions → Variables** создайте переменную репозитория `STAGING_ENABLED` со значением `true`. Пока её нет, job **Deploy to staging** пропускается. Это нужно, чтобы push в `dev` не ждал runner'а, которого ещё нет.
+
+После этого каждый push в `dev` после зелёных проверок выкатывается на `http://<сервер>:21115/`. Администратора на staging создайте отдельно: `docker exec -it rustdesk-api-staging python manage.py createsuperuser`.
 
 ## Настройка клиента RustDesk
 
